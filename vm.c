@@ -33,7 +33,7 @@ static inline Value pop(VM *vm) {
     return vm->stack[--vm->sp];
 }
 
-static inline Value peek_top(VM *vm) {
+__attribute__((unused)) static inline Value peek_top(VM *vm) {
     if (vm->sp <= 0) {
         fprintf(stderr, "VM error: stack underflow in peek\n");
         exit(1);
