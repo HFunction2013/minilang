@@ -1,0 +1,233 @@
+/* LLVM backend runtime for minilang */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+typedef struct {
+    int64_t tag;     /* 0=nil, 1=int, 2=string, 3=array */
+    int64_t payload; /* int value, or pointer cast to i64 */
+} Value;
+
+typedef struct {
+    int64_t len;
+    Value *data;
+} Array;
+
+#define TAG_NIL 0
+#define TAG_INT 1
+#define TAG_STR 2
+#define TAG_ARR 3
+
+static Value vnil(void) { Value v = {TAG_NIL, 0}; return v; }
+static Value vint(int64_t x) { Value v = {TAG_INT, x}; return v; }
+static Value vstr(const char *s) { Value v = {TAG_STR, (int64_t)(intptr_t)strdup(s ? s : "")}; return v; }
+
+static const char *cstr(Value v) {
+    if (v.tag == TAG_STR) return (const char*)(intptr_t)v.payload;
+    return "";
+}
+
+static Array *carr(Value v) {
+    if (v.tag == TAG_ARR) return (Array*)(intptr_t)v.payload;
+    return NULL;
+}
+
+void ml_print(Value v, int32_t newline) {
+    switch (v.tag) {
+        case TAG_NIL: printf("nil"); break;
+        case TAG_INT: printf("%lld", (long long)v.payload); break;
+        case TAG_STR: printf("%s", cstr(v)); break;
+        case TAG_ARR: {
+            Array *a = carr(v);
+            printf("[");
+            for (int64_t i = 0; i < a->len; i++) {
+                if (i > 0) printf(", ");
+                ml_print(a->data[i], 0);
+            }
+            printf("]");
+            break;
+        }
+    }
+    if (newline) printf("\n");
+    fflush(stdout);
+}
+
+static int truthy(Value v) {
+    switch (v.tag) {
+        case TAG_NIL: return 0;
+        case TAG_INT: return v.payload != 0;
+        case TAG_STR: return strlen(cstr(v)) > 0;
+        case TAG_ARR: return 1;
+    }
+    return 0;
+}
+
+Value ml_add(Value a, Value b) {
+    if (a.tag == TAG_INT && b.tag == TAG_INT) return vint(a.payload + b.payload);
+    if (a.tag == TAG_STR || b.tag == TAG_STR) {
+        char buf_a[64], buf_b[64];
+        const char *sa, *sb;
+        if (a.tag == TAG_STR) sa = cstr(a);
+        else { snprintf(buf_a, sizeof(buf_a), "%lld", (long long)a.payload); sa = buf_a; }
+        if (b.tag == TAG_STR) sb = cstr(b);
+        else { snprintf(buf_b, sizeof(buf_b), "%lld", (long long)b.payload); sb = buf_b; }
+        size_t la = strlen(sa), lb = strlen(sb);
+        char *r = malloc(la + lb + 1);
+        memcpy(r, sa, la); memcpy(r + la, sb, lb);
+        r[la + lb] = '\0';
+        Value v = {TAG_STR, (int64_t)(intptr_t)r};
+        return v;
+    }
+    fprintf(stderr, "type error: +\n"); exit(1);
+}
+
+Value ml_sub(Value a, Value b) {
+    if (a.tag == TAG_INT && b.tag == TAG_INT) return vint(a.payload - b.payload);
+    fprintf(stderr, "type error: -\n"); exit(1);
+}
+Value ml_mul(Value a, Value b) {
+    if (a.tag == TAG_INT && b.tag == TAG_INT) return vint(a.payload * b.payload);
+    fprintf(stderr, "type error: *\n"); exit(1);
+}
+Value ml_div(Value a, Value b) {
+    if (a.tag == TAG_INT && b.tag == TAG_INT) {
+        if (b.payload == 0) { fprintf(stderr, "division by zero\n"); exit(1); }
+        return vint(a.payload / b.payload);
+    }
+    fprintf(stderr, "type error: /\n"); exit(1);
+}
+Value ml_mod(Value a, Value b) {
+    if (a.tag == TAG_INT && b.tag == TAG_INT) {
+        if (b.payload == 0) { fprintf(stderr, "modulo by zero\n"); exit(1); }
+        return vint(a.payload % b.payload);
+    }
+    fprintf(stderr, "type error: %%\n"); exit(1);
+}
+Value ml_neg(Value a) {
+    if (a.tag == TAG_INT) return vint(-a.payload);
+    fprintf(stderr, "type error: unary -\n"); exit(1);
+}
+
+static int cmp(Value a, Value b) {
+    if (a.tag == TAG_INT && b.tag == TAG_INT) {
+        if (a.payload < b.payload) return -1;
+        if (a.payload > b.payload) return 1;
+        return 0;
+    }
+    if (a.tag == TAG_STR && b.tag == TAG_STR) return strcmp(cstr(a), cstr(b));
+    if (a.tag == TAG_NIL && b.tag == TAG_NIL) return 0;
+    return -2;
+}
+
+Value ml_eq(Value a, Value b) { return vint(cmp(a, b) == 0); }
+Value ml_neq(Value a, Value b) { return vint(cmp(a, b) != 0); }
+Value ml_lt(Value a, Value b) { return vint(cmp(a, b) < 0); }
+Value ml_gt(Value a, Value b) { return vint(cmp(a, b) > 0); }
+Value ml_lte(Value a, Value b) { return vint(cmp(a, b) <= 0); }
+Value ml_gte(Value a, Value b) { return vint(cmp(a, b) >= 0); }
+Value ml_and(Value a, Value b) { return vint(truthy(a) && truthy(b)); }
+Value ml_or(Value a, Value b) { return vint(truthy(a) || truthy(b)); }
+Value ml_not(Value a) { return vint(!truthy(a)); }
+
+Value ml_array_create(int64_t count, Value *items) {
+    Array *a = malloc(sizeof(Array));
+    a->len = count;
+    a->data = malloc(sizeof(Value) * (count > 0 ? count : 1));
+    for (int64_t i = 0; i < count; i++) a->data[i] = items[i];
+    Value v = {TAG_ARR, (int64_t)(intptr_t)a};
+    return v;
+}
+
+Value ml_array_get(Value arr, int64_t idx) {
+    if (arr.tag == TAG_ARR) {
+        Array *a = carr(arr);
+        if (idx < 0 || idx >= a->len) { fprintf(stderr, "array index %lld out of bounds\n", (long long)idx); exit(1); }
+        return a->data[idx];
+    }
+    if (arr.tag == TAG_STR) {
+        const char *s = cstr(arr);
+        int64_t len = strlen(s);
+        if (idx < 0 || idx >= len) return vint(0);
+        return vint((unsigned char)s[idx]);
+    }
+    fprintf(stderr, "cannot index non-array\n"); exit(1);
+}
+
+void ml_array_set(Value arr, int64_t idx, Value val) {
+    if (arr.tag == TAG_ARR) {
+        Array *a = carr(arr);
+        if (idx < 0 || idx >= a->len) { fprintf(stderr, "array index %lld out of bounds\n", (long long)idx); exit(1); }
+        a->data[idx] = val;
+        return;
+    }
+    fprintf(stderr, "cannot index-assign non-array\n"); exit(1);
+}
+
+Value ml_len(Value v) {
+    if (v.tag == TAG_STR) return vint(strlen(cstr(v)));
+    if (v.tag == TAG_ARR) return vint(carr(v)->len);
+    fprintf(stderr, "len expects string or array\n"); exit(1);
+}
+
+Value ml_charat(Value s, Value idx) {
+    if (s.tag != TAG_STR || idx.tag != TAG_INT) { fprintf(stderr, "charAt expects string, int\n"); exit(1); }
+    const char *str = cstr(s);
+    int64_t i = idx.payload;
+    int64_t len = strlen(str);
+    if (i < 0 || i >= len) return vint(0);
+    return vint((unsigned char)str[i]);
+}
+
+Value ml_substr(Value s, Value start, Value len) {
+    if (s.tag != TAG_STR || start.tag != TAG_INT || len.tag != TAG_INT) {
+        fprintf(stderr, "substr expects string, int, int\n"); exit(1);
+    }
+    const char *str = cstr(s);
+    int64_t slen = strlen(str);
+    int64_t st = start.payload, ln = len.payload;
+    if (st < 0) st = 0;
+    if (st > slen) st = slen;
+    if (st + ln > slen) ln = slen - st;
+    if (ln < 0) ln = 0;
+    char *r = malloc(ln + 1);
+    memcpy(r, str + st, ln);
+    r[ln] = '\0';
+    Value v = {TAG_STR, (int64_t)(intptr_t)r};
+    return v;
+}
+
+Value ml_tostring(Value v) {
+    if (v.tag == TAG_STR) return vstr(cstr(v));
+    if (v.tag == TAG_INT) {
+        char buf[32];
+        snprintf(buf, sizeof(buf), "%lld", (long long)v.payload);
+        return vstr(buf);
+    }
+    if (v.tag == TAG_NIL) return vstr("nil");
+    return vstr("<array>");
+}
+
+Value ml_toint(Value v) {
+    if (v.tag == TAG_INT) return v;
+    if (v.tag == TAG_STR) return vint(atoll(cstr(v)));
+    fprintf(stderr, "toInt expects int or string\n"); exit(1);
+}
+
+Value ml_strcmp(Value a, Value b) {
+    if (a.tag == TAG_STR && b.tag == TAG_STR) return vint(strcmp(cstr(a), cstr(b)));
+    fprintf(stderr, "strcmp expects two strings\n"); exit(1);
+}
+
+Value ml_readall(void) {
+    size_t cap = 4096, len = 0;
+    char *buf = malloc(cap);
+    int c;
+    while ((c = fgetc(stdin)) != EOF) {
+        if (len + 1 >= cap) { cap *= 2; buf = realloc(buf, cap); }
+        buf[len++] = (char)c;
+    }
+    buf[len] = '\0';
+    Value v = {TAG_STR, (int64_t)(intptr_t)buf};
+    return v;
+}
