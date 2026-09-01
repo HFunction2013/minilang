@@ -1,0 +1,43 @@
+#[display_name = "minilang"]
+#[path = "**/*.mil"]
+#[path = "**/*.milc"]
+
+pub fn minilang() {
+    until /$/ {
+        yield other;
+        if /\/\/.*/ {
+            yield comment;
+        } else if /\/\*/ {
+            loop {
+                yield comment;
+                await input;
+                if /\*\// {
+                    yield comment;
+                    break;
+                }
+            }
+        } else if /"/ {
+            until /$/ {
+                yield string;
+                if /\\./ {}
+                else if /"/ { yield string; break; }
+                await input;
+            }
+        } else if /(?:var|func|if|else|while|return|break|require|from|in)\>/ {
+            yield keyword.control;
+        } else if /(?:print|println)\>/ {
+            yield keyword.other;
+        } else if /(?:true|false|nil)\>/ {
+            yield constant.language;
+        } else if /-?(?:0x[\da-fA-F_]+|\d[\d_]*)/ {
+            yield constant.numeric;
+        } else if /\b(?:len|charAt|substr|toString|toInt|strcmp|readAll|array|abs|min|max|gcd|sqrt|pow|cos|sin)\b/ {
+            yield support.function;
+        } else if /(\w+)\s*\(/ {
+            yield $1 as function;
+        } else if /\w+/ {
+            // Gobble word chars to align the next iteration on a word boundary.
+        }
+        yield other;
+    }
+}

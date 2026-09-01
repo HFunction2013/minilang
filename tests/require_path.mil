@@ -1,0 +1,15 @@
+// Test require with explicit search path and module-internal calls
+require math in syslib;
+require string in syslib;
+
+func main() {
+    // sin internally calls cos (module-internal reference test)
+    println toString(math.sin(90));
+    println toString(math.sin(30));
+    // string module
+    println string.contains("hello world", "world");
+    println string.startsWith("minilang", "mini");
+    println string.endsWith("minilang", "lang");
+    println string.countChar("banana", "a");
+    return 0;
+}

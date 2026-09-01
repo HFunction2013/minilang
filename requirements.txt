@@ -1,0 +1,4 @@
+# minilang build dependencies
+# The LLVM backend (build -e) uses llvmlite to compile LLVM IR to an object
+# file, then links with gcc. The VM backend (run / build -b) needs no deps.
+llvmlite>=0.41.0

@@ -397,18 +397,23 @@ static char *compile_expr_ir(IRGen *g, Node *n) {
                 return r;
             }
             // User function call
+            // Resolve alias
+            const char *cname = n->call.name;
+            for (int ai = 0; ai < g->parser->alias_count; ai++) {
+                if (strcmp(g->parser->alias_names[ai], cname) == 0) { cname = g->parser->alias_targets[ai]; break; }
+            }
             // Find function index
             int fi = -1;
             for (int i = 0; i < g->parser->func_count; i++) {
-                if (strcmp(g->parser->funcs[i]->func.name, n->call.name) == 0) { fi = i; break; }
+                if (strcmp(g->parser->funcs[i]->func.name, cname) == 0) { fi = i; break; }
             }
-            if (fi < 0) { fprintf(stderr, "IR error: undefined function '%s'\n", n->call.name); exit(1); }
+            if (fi < 0) { fprintf(stderr, "IR error: undefined function '%s'\n", cname); exit(1); }
             char **args = malloc(sizeof(char*) * n->call.arg_count);
             for (int i = 0; i < n->call.arg_count; i++) args[i] = compile_expr_ir(g, n->call.args[i]);
             char *r = new_temp(g);
             // Build call
             char callbuf[2048];
-            int pos = snprintf(callbuf, sizeof(callbuf), "  %s = call %%Value @user_%s(", r, n->call.name);
+            int pos = snprintf(callbuf, sizeof(callbuf), "  %s = call %%Value @user_%s(", r, cname);
             for (int i = 0; i < n->call.arg_count; i++) {
                 if (i > 0) pos += snprintf(callbuf + pos, sizeof(callbuf) - pos, ", ");
                 pos += snprintf(callbuf + pos, sizeof(callbuf) - pos, "%%Value %s", args[i]);

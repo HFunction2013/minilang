@@ -71,10 +71,11 @@ typedef enum {
     // keywords
     TOK_VAR, TOK_FUNC, TOK_IF, TOK_ELSE, TOK_WHILE,
     TOK_RETURN, TOK_PRINT, TOK_PRINTLN, TOK_BREAK,
+    TOK_REQUIRE, TOK_FROM, TOK_IN,
     // operators
     TOK_PLUS, TOK_MINUS, TOK_STAR, TOK_SLASH, TOK_PERCENT,
     TOK_EQ, TOK_EQEQ, TOK_NEQ, TOK_LT, TOK_GT, TOK_LTE, TOK_GTE,
-    TOK_AND, TOK_OR, TOK_NOT,
+    TOK_AND, TOK_OR, TOK_NOT, TOK_DOT,
     // punctuation
     TOK_LPAREN, TOK_RPAREN, TOK_LBRACE, TOK_RBRACE,
     TOK_LBRACKET, TOK_RBRACKET,
@@ -158,6 +159,12 @@ void node_free(Node *n);
 
 /* ===================== Parser ===================== */
 typedef struct {
+    char *module_name;  // e.g. "math"
+    char **exports;     // exported function names as imported, e.g. "cos"
+    int export_count;
+    int export_cap;
+} ModuleInfo;
+typedef struct {
     Lexer *lexer;
     int pos;
     Node **funcs;   // top-level functions
@@ -166,11 +173,19 @@ typedef struct {
     Node **globals; // top-level var declarations
     int global_count;
     int global_cap;
+    ModuleInfo *modules;  // loaded modules (for namespace access)
+    int module_count;
+    int module_cap;
+    char **alias_names;   // require cos from math -> alias "cos"
+    char **alias_targets; // -> target "math.cos"
+    int alias_count;
+    int alias_cap;
 } Parser;
 
 Parser *parser_new(Lexer *l);
 void parser_free(Parser *p);
 void parse(Parser *p);
+void parser_set_search_dirs(const char *script_dir, const char *syslib_dir);
 
 /* ===================== Bytecode ===================== */
 typedef enum {
@@ -239,6 +254,12 @@ int program_add_func(Program *prog, const char *name, int address, int params);
 void bc_emit(Program *prog, int op, int op1, int op2);
 
 Program *compile_to_bytecode(Parser *p);
+/* ===================== .milc bytecode serialization ===================== */
+#define MILC_MAGIC "!milc"
+#define MILC_MAGIC_LEN 5
+int program_write_milc(Program *prog, const char *path);  // 0 on success
+Program *program_read_milc(const char *path);             // NULL on error
+int is_milc_file(const char *path);
 
 /* ===================== VM ===================== */
 #define VM_STACK_SIZE 16384

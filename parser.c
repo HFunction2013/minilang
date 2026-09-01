@@ -50,6 +50,8 @@ Parser *parser_new(Lexer *l) {
     p->lexer = l; p->pos = 0;
     p->funcs = NULL; p->func_count = 0; p->func_cap = 0;
     p->globals = NULL; p->global_count = 0; p->global_cap = 0;
+    p->modules = NULL; p->module_count = 0; p->module_cap = 0;
+    p->alias_names = NULL; p->alias_targets = NULL; p->alias_count = 0; p->alias_cap = 0;
     return p;
 }
 
@@ -58,6 +60,18 @@ void parser_free(Parser *p) {
     free(p->funcs);
     for (int i = 0; i < p->global_count; i++) node_free(p->globals[i]);
     free(p->globals);
+    for (int i = 0; i < p->module_count; i++) {
+        free(p->modules[i].module_name);
+        for (int j = 0; j < p->modules[i].export_count; j++) free(p->modules[i].exports[j]);
+        free(p->modules[i].exports);
+    }
+    free(p->modules);
+    for (int i = 0; i < p->alias_count; i++) {
+        free(p->alias_names[i]);
+        free(p->alias_targets[i]);
+    }
+    free(p->alias_names);
+    free(p->alias_targets);
     free(p);
 }
 
@@ -114,6 +128,44 @@ static Node *parse_primary(Parser *p) {
     }
     if (t->type == TOK_IDENT) {
         advance_p(p);
+        // Namespace access: module.func(...)
+        if (check(p, TOK_DOT)) {
+            Token *module_tok = t;
+            advance_p(p); // consume '.'
+            Token *member = expect(p, TOK_IDENT, "function name after '.'");
+            // Check that module_tok is a loaded module
+            int mod_idx = -1;
+            for (int i = 0; i < p->module_count; i++) {
+                if (strcmp(p->modules[i].module_name, module_tok->text) == 0) { mod_idx = i; break; }
+            }
+            if (mod_idx < 0) {
+                fprintf(stderr, "Parse error line %d: unknown module '%s'\n", module_tok->line, module_tok->text);
+                exit(1);
+            }
+            // Build the full name "module.func"
+            int len = strlen(module_tok->text) + strlen(member->text) + 2;
+            char *full = malloc(len);
+            snprintf(full, len, "%s.%s", module_tok->text, member->text);
+            if (check(p, TOK_LPAREN)) {
+                advance_p(p);
+                Node **args = NULL; int argc = 0, acap = 0;
+                if (!check(p, TOK_RPAREN)) {
+                    while (1) {
+                        Node *a = parse_expr(p);
+                        if (argc >= acap) { acap = acap ? acap*2 : 4; args = realloc(args, sizeof(Node*)*acap); }
+                        args[argc++] = a;
+                        if (check(p, TOK_COMMA)) { advance_p(p); continue; }
+                        break;
+                    }
+                }
+                expect(p, TOK_RPAREN, "')'");
+                Node *n = node_new(NODE_CALL, t->line);
+                n->call.name = full; // "math.cos"
+                n->call.args = args; n->call.arg_count = argc; return n;
+            }
+            Node *n = node_new(NODE_VAR, t->line);
+            n->var.name = full; return n;
+        }
         if (check(p, TOK_LPAREN)) {
             advance_p(p);
             Node **args = NULL; int argc = 0, acap = 0;
@@ -361,9 +413,277 @@ static Node *parse_func(Parser *p) {
     n->func.body = body; return n;
 }
 
+/* ===================== require module system ===================== */
+static char g_script_dir[1024] = ".";
+static char g_syslib_dir[1024] = "syslib";
+void parser_set_search_dirs(const char *script_dir, const char *syslib_dir) {
+    if (script_dir) { snprintf(g_script_dir, sizeof(g_script_dir), "%s", script_dir); }
+    if (syslib_dir) { snprintf(g_syslib_dir, sizeof(g_syslib_dir), "%s", syslib_dir); }
+}
+static void add_module_func(Parser *p, Node *f) {
+    if (p->func_count >= p->func_cap) {
+        p->func_cap = p->func_cap ? p->func_cap*2 : 8;
+        p->funcs = realloc(p->funcs, sizeof(Node*)*p->func_cap);
+    }
+    p->funcs[p->func_count++] = f;
+}
+static int add_alias(Parser *p, const char *name, const char *target) {
+    // Check for duplicate alias
+    for (int i = 0; i < p->alias_count; i++) {
+        if (strcmp(p->alias_names[i], name) == 0) return 0; // already imported
+    }
+    if (p->alias_count >= p->alias_cap) {
+        p->alias_cap = p->alias_cap ? p->alias_cap*2 : 8;
+        p->alias_names = realloc(p->alias_names, sizeof(char*)*p->alias_cap);
+        p->alias_targets = realloc(p->alias_targets, sizeof(char*)*p->alias_cap);
+    }
+    p->alias_names[p->alias_count] = strdup(name);
+    p->alias_targets[p->alias_count] = strdup(target);
+    p->alias_count++;
+    return 1;
+}
+static int module_already_loaded(Parser *p, const char *module) {
+    for (int i = 0; i < p->module_count; i++) {
+        if (strcmp(p->modules[i].module_name, module) == 0) return 1;
+    }
+    return 0;
+}
+/* Rename all NODE_CALL names in module funcs by adding module prefix for
+   internal cross-references (function calls to other module functions).
+   Local variables keep their names. */
+static void rename_module_refs(Node *n, const char *prefix, int prefix_len) {
+    if (!n) return;
+    switch (n->type) {
+        case NODE_FUNC: {
+            // Rename calls inside body only; params stay as-is
+            rename_module_refs(n->func.body, prefix, prefix_len);
+            break;
+        }
+        case NODE_VAR_DECL:
+            rename_module_refs(n->var_decl.value, prefix, prefix_len);
+            break;
+        case NODE_ASSIGN:
+            rename_module_refs(n->assign.value, prefix, prefix_len);
+            break;
+        case NODE_BINARY:
+            rename_module_refs(n->binary.left, prefix, prefix_len);
+            rename_module_refs(n->binary.right, prefix, prefix_len);
+            break;
+        case NODE_UNARY:
+            rename_module_refs(n->unary.operand, prefix, prefix_len);
+            break;
+        case NODE_IF:
+            rename_module_refs(n->if_stmt.cond, prefix, prefix_len);
+            rename_module_refs(n->if_stmt.then_branch, prefix, prefix_len);
+            rename_module_refs(n->if_stmt.else_branch, prefix, prefix_len);
+            break;
+        case NODE_WHILE:
+            rename_module_refs(n->while_stmt.cond, prefix, prefix_len);
+            rename_module_refs(n->while_stmt.body, prefix, prefix_len);
+            break;
+        case NODE_RETURN:
+            rename_module_refs(n->return_stmt.value, prefix, prefix_len);
+            break;
+        case NODE_CALL: {
+            // Rename internal function calls (not builtins, not already qualified)
+            if (strchr(n->call.name, '.') == NULL) {
+                const char *builtins[] = {"len","charAt","substr","toString","toInt","strcmp","readAll","array","print","println"};
+                int is_builtin = 0;
+                for (int i = 0; i < 10; i++) if (strcmp(n->call.name, builtins[i]) == 0) { is_builtin = 1; break; }
+                if (!is_builtin) {
+                    char *newname = malloc(strlen(n->call.name) + prefix_len + 1);
+                    snprintf(newname, strlen(n->call.name) + prefix_len + 1, "%s%s", prefix, n->call.name);
+                    free(n->call.name); n->call.name = newname;
+                }
+            }
+            for (int i = 0; i < n->call.arg_count; i++) rename_module_refs(n->call.args[i], prefix, prefix_len);
+            break;
+        }
+        case NODE_VAR:
+            // keep as-is (local var or module global referenced by name)
+            break;
+        case NODE_INDEX:
+            rename_module_refs(n->index.array, prefix, prefix_len);
+            rename_module_refs(n->index.index, prefix, prefix_len);
+            break;
+        case NODE_INDEX_ASSIGN:
+            rename_module_refs(n->index_assign.target, prefix, prefix_len);
+            rename_module_refs(n->index_assign.index, prefix, prefix_len);
+            rename_module_refs(n->index_assign.value, prefix, prefix_len);
+            break;
+        case NODE_PRINT:
+            rename_module_refs(n->print.value, prefix, prefix_len);
+            break;
+        case NODE_BLOCK:
+            for (int i = 0; i < n->block.count; i++) rename_module_refs(n->block.stmts[i], prefix, prefix_len);
+            break;
+        case NODE_EXPR_STMT:
+            rename_module_refs(n->expr_stmt.expr, prefix, prefix_len);
+            break;
+        case NODE_ARRAY_LIT:
+            for (int i = 0; i < n->array_lit.count; i++) rename_module_refs(n->array_lit.items[i], prefix, prefix_len);
+            break;
+        default: break;
+    }
+}
+/* Parse a module file and merge its functions into the main parser. */
+static void load_module(Parser *p, const char *module_name, int search_syslib_only) {
+    // Build candidate paths: script dir first, then syslib
+    char path[2048];
+    const char *dirs[2];
+    int ndirs;
+    if (search_syslib_only == 1) {
+        dirs[0] = g_syslib_dir; ndirs = 1;
+    } else if (search_syslib_only == 2) { // cwd only
+        dirs[0] = "."; ndirs = 1;
+    } else {
+        dirs[0] = g_script_dir; dirs[1] = g_syslib_dir; ndirs = 2;
+    }
+    char *src = NULL;
+    char found_path[2048];
+    for (int i = 0; i < ndirs; i++) {
+        snprintf(path, sizeof(path), "%s/%s.mil", dirs[i], module_name);
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            fclose(f);
+            char *s = read_file(path);
+            if (s) { src = s; snprintf(found_path, sizeof(found_path), "%s", path); break; }
+        }
+    }
+    if (!src) {
+        fprintf(stderr, "Parse error: cannot find module '%s' (searched %s)\n", module_name, dirs[0]);
+        exit(1);
+    }
+    // Lex and parse module source
+    Lexer *lexer = lexer_new(src);
+    lex(lexer);
+    Parser *mp = parser_new(lexer);
+    /* Save/restore search dirs: modules resolve their own requires relative to same dirs */
+    parse(mp);
+    /* Rename module functions: module_name prefix */
+    char prefix[1024];
+    snprintf(prefix, sizeof(prefix), "%s.", module_name);
+    int prefix_len = strlen(prefix);
+    // Rename function definitions themselves (only unprefixed = this module's own funcs)
+    for (int i = 0; i < mp->func_count; i++) {
+        Node *f = mp->funcs[i];
+        if (strchr(f->func.name, '.') != NULL) {
+            // already qualified (nested require pulled it in): keep name, still rename
+            // references inside its body so it can find this module's funcs
+            rename_module_refs(f->func.body, prefix, prefix_len);
+            continue;
+        }
+        char *newname = malloc(strlen(f->func.name) + prefix_len + 1);
+        snprintf(newname, strlen(f->func.name) + prefix_len + 1, "%s%s", prefix, f->func.name);
+        free(f->func.name); f->func.name = newname;
+        // Rename internal references inside body
+        rename_module_refs(f->func.body, prefix, prefix_len);
+    }
+    // Merge into main parser
+    for (int i = 0; i < mp->func_count; i++) add_module_func(p, mp->funcs[i]);
+    mp->func_count = 0;
+    for (int i = 0; i < mp->global_count; i++) {
+        Node *g = mp->globals[i];
+        if (p->global_count >= p->global_cap) {
+            p->global_cap = p->global_cap ? p->global_cap*2 : 16;
+            p->globals = realloc(p->globals, sizeof(Node*)*p->global_cap);
+        }
+        p->globals[p->global_count++] = g;
+    }
+    mp->global_count = 0;
+    // Record module info with exports (function names)
+    if (p->module_count >= p->module_cap) {
+        p->module_cap = p->module_cap ? p->module_cap*2 : 4;
+        p->modules = realloc(p->modules, sizeof(ModuleInfo)*p->module_cap);
+    }
+    ModuleInfo *mi = &p->modules[p->module_count++];
+    mi->module_name = strdup(module_name);
+    mi->exports = NULL; mi->export_count = 0; mi->export_cap = 0;
+    // Exports: function names WITH prefix
+    for (int i = 0; i < p->func_count; i++) {
+        /* count funcs belonging to this module */
+    }
+    // Record export names (already prefixed) for namespace lookup
+    for (int i = 0; i < p->func_count; i++) {
+        char *fn = p->funcs[i]->func.name;
+        if (strncmp(fn, prefix, prefix_len) == 0) {
+            if (mi->export_count >= mi->export_cap) {
+                mi->export_cap = mi->export_cap ? mi->export_cap*2 : 8;
+                mi->exports = realloc(mi->exports, sizeof(char*)*mi->export_cap);
+            }
+            mi->exports[mi->export_count++] = strdup(fn);
+        }
+    }
+    parser_free(mp);
+    free(lexer);
+    free(src);
+}
+/* Parse a require statement: require A; / require x from A; / require x,y from A; / ... in cwd|syslib */
+static void parse_require(Parser *p) {
+    advance_p(p); // consume 'require'
+    // Collect imported names (if any)
+    char **names = NULL; int ncount = 0, ncap = 0;
+    char *module = NULL;
+    if (check(p, TOK_IDENT) && (peek_tok(p, 1)->type == TOK_FROM || peek_tok(p, 1)->type == TOK_COMMA)) {
+        // require x from A; or require x, y from A;
+        while (1) {
+            Token *nm = expect(p, TOK_IDENT, "identifier");
+            if (ncount >= ncap) { ncap = ncap ? ncap*2 : 4; names = realloc(names, sizeof(char*)*ncap); }
+            names[ncount++] = strdup(nm->text);
+            if (check(p, TOK_COMMA)) { advance_p(p); continue; }
+            break;
+        }
+        expect(p, TOK_FROM, "'from'");
+        Token *mod = expect(p, TOK_IDENT, "module name");
+        module = strdup(mod->text);
+    } else {
+        // require A;
+        Token *mod = expect(p, TOK_IDENT, "module name");
+        module = strdup(mod->text);
+    }
+    int search_syslib_only = 0; // 0=default, 1=syslib only, 2=cwd only
+    if (check(p, TOK_IN)) {
+        advance_p(p);
+        Token *loc = expect(p, TOK_IDENT, "'syslib' or 'cwd'");
+        if (strcmp(loc->text, "syslib") == 0) search_syslib_only = 1;
+        else if (strcmp(loc->text, "cwd") == 0) search_syslib_only = 2;
+        else { fprintf(stderr, "Parse error line %d: expected 'syslib' or 'cwd' after 'in'\n", loc->line); exit(1); }
+    }
+    expect(p, TOK_SEMICOLON, "';'");
+    // Load module (if not already loaded)
+    if (!module_already_loaded(p, module)) {
+        load_module(p, module, search_syslib_only);
+    }
+    if (ncount > 0) {
+        // require cos from math: alias cos -> math.cos
+        for (int i = 0; i < ncount; i++) {
+            char target[2048];
+            snprintf(target, sizeof(target), "%s.%s", module, names[i]);
+            // Verify the function exists in module
+            int found = 0;
+            for (int m = 0; m < p->module_count; m++) {
+                if (strcmp(p->modules[m].module_name, module) == 0) {
+                    for (int e = 0; e < p->modules[m].export_count; e++) {
+                        if (strcmp(p->modules[m].exports[e], target) == 0) { found = 1; break; }
+                    }
+                }
+            }
+            if (!found) {
+                fprintf(stderr, "Parse error: module '%s' has no exported function '%s'\n", module, names[i]);
+                exit(1);
+            }
+            add_alias(p, names[i], target);
+        }
+    }
+    for (int i = 0; i < ncount; i++) free(names[i]);
+    free(names);
+    free(module);
+}
 void parse(Parser *p) {
     while (!check(p, TOK_EOF)) {
-        if (check(p, TOK_FUNC)) {
+        if (check(p, TOK_REQUIRE)) {
+            parse_require(p);
+        } else if (check(p, TOK_FUNC)) {
             Node *f = parse_func(p);
             if (p->func_count >= p->func_cap) {
                 p->func_cap = p->func_cap ? p->func_cap*2 : 8;

@@ -74,6 +74,9 @@ static TokenType keyword_or_ident(const char *word) {
     if (strcmp(word, "print") == 0) return TOK_PRINT;
     if (strcmp(word, "println") == 0) return TOK_PRINTLN;
     if (strcmp(word, "break") == 0) return TOK_BREAK;
+    if (strcmp(word, "require") == 0) return TOK_REQUIRE;
+    if (strcmp(word, "from") == 0) return TOK_FROM;
+    if (strcmp(word, "in") == 0) return TOK_IN;
     return TOK_IDENT;
 }
 
@@ -160,6 +163,7 @@ void lex(Lexer *l) {
             case ']': add_token(l, TOK_RBRACKET, NULL, 0); break;
             case ',': add_token(l, TOK_COMMA, NULL, 0); break;
             case ';': add_token(l, TOK_SEMICOLON, NULL, 0); break;
+            case '.': add_token(l, TOK_DOT, NULL, 0); break;
             case '=':
                 if (peek(l) == '=') { advance(l); add_token(l, TOK_EQEQ, NULL, 0); }
                 else add_token(l, TOK_EQ, NULL, 0);

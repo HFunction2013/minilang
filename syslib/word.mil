@@ -1,0 +1,16 @@
+// word.mil depends on string.mil (nested require test)
+require string;
+
+func shout(s) {
+    return string.repeat(s, 1) + "!";
+}
+
+func isPalindrome(s) {
+    var n = len(s);
+    var i = 0;
+    while (i < n / 2) {
+        if (charAt(s, i) != charAt(s, n - 1 - i)) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}

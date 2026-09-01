@@ -1,0 +1,28 @@
+// Test the require module system
+require math;
+require string;
+require abs from math;
+require cos, sin from math;
+
+func main() {
+    // Namespace access
+    println toString(math.abs(-42));
+    println toString(math.gcd(48, 36));
+    println toString(math.max(3, 7));
+    println toString(math.fib(10));
+    println toString(math.cos(0));
+    println toString(math.cos(60));
+    println toString(math.cos(180));
+    println toString(math.sin(90));
+
+    // String module via namespace
+    println string.repeat("ab", 3);
+    println string.reverse("hello");
+
+    // Direct import
+    println toString(abs(-5));
+    println toString(cos(0));
+    println toString(sin(30));
+
+    return 0;
+}

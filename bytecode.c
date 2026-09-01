@@ -347,9 +347,14 @@ static void compile_expr(Compiler *c, Node *n) {
                 break;
             }
             // User-defined function
-            int fi = find_func(c, n->call.name);
+            // Resolve alias: if n->call.name is an alias, use target name
+            const char *cname = n->call.name;
+            for (int ai = 0; ai < c->parser->alias_count; ai++) {
+                if (strcmp(c->parser->alias_names[ai], cname) == 0) { cname = c->parser->alias_targets[ai]; break; }
+            }
+            int fi = find_func(c, cname);
             if (fi < 0) {
-                fprintf(stderr, "Compile error: undefined function '%s'\n", n->call.name);
+                fprintf(stderr, "Compile error: undefined function '%s'\n", cname);
                 exit(1);
             }
             for (int i = 0; i < n->call.arg_count; i++)

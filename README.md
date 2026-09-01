@@ -2,15 +2,20 @@
 
 一个极简的可自举编程语言，支持双编译后端：字节码 VM 和 LLVM 原生编译。
 
+源文件后缀为 `.mil`，字节码文件后缀为 `.milc`（魔数 `!milc`）。
+
 ## 特性
 
 - **C-like 语法**：函数、递归、if/else、while、var 声明、数组、字符串
 - **双后端**：
   - 字节码 + 栈式 VM（快速开发、调试）
   - LLVM IR → 原生可执行文件（高性能）
-- **可自举**：用 minilang 写的编译器 (`compiler.ml`) 能编译自身，且输出与 C  boot 编译器完全一致
+- **可自举**：用 minilang 写的编译器 (`compiler.mil`) 能编译自身，且输出与 C boot 编译器完全一致
 - **无外部依赖**：不使用文件、网络等外部交互（除 console I/O）
-- **内置函数**：`len`, `charAt`, `substr`, `toString`, `toInt`, `strcmp`, `array`, `readAll`
+- **内置函数**：`len`, `charAt`, `substr`, `toString`, `toInt`, `strcmp`, `readAll`, `array`
+- **模块系统（require）**：从 syslib 或脚本目录加载模块，支持命名空间访问和选择性导入
+- **REPL**：交互式命令行，支持多行输入、表达式求值、跨行保留函数/变量/模块
+- **.milc 字节码文件**：可编译为二进制字节码文件，随时加载运行
 
 ## 构建
 
@@ -25,7 +30,7 @@ make
 LLVM 后端使用 Python 的 `llvmlite` 包将 IR 编译为目标文件：
 
 ```bash
-pip install llvmlite
+pip install -r requirements.txt
 ```
 
 系统 `gcc` 用于最终链接。
@@ -33,21 +38,34 @@ pip install llvmlite
 ## CLI 用法
 
 ```bash
-# 1. 在 VM 上运行程序
-./minilang run tests/hello.ml
+# 1. 在 VM 上运行程序（支持 .mil 源码 或 .milc 字节码）
+./minilang run tests/hello.mil
+./minilang run tests/hello.milc
 
 # 2. 输出人类可读的字节码反汇编
-./minilang bytecode tests/hello.ml
+./minilang bytecode tests/hello.mil
 
 # 3. 输出自举对比用的文本格式字节码
-./minilang dump-text tests/hello.ml
+./minilang dump-text tests/hello.mil
 
 # 4. 输出 LLVM IR (.ll 文件)
-./minilang llvm tests/hello.ml
+./minilang llvm tests/hello.mil
 
-# 5. 编译为原生可执行文件 (LLVM 后端)
-./minilang build tests/hello.ml
+# 5. 编译为 .milc 字节码文件（魔数 "!milc"）
+./minilang build -b tests/hello.mil
+./minilang build --bytecode tests/hello.mil
+
+# 6. 编译为原生可执行文件 (LLVM 后端, 默认)
+./minilang build -e tests/hello.mil
+./minilang build --executable tests/hello.mil
+./minilang build tests/hello.mil    # 默认 -e
 ./tests/hello
+
+# 7. 交互式 REPL
+./minilang repl
+
+# 8. 自举验证
+./bootstrap_test.sh
 ```
 
 ## 语言语法
@@ -103,13 +121,71 @@ func main() {
 比较：`== != < > <= >=`
 逻辑：`&& || !`（注意：不做短路求值，使用嵌套 if 避免类型错误）
 
+## require 模块系统
+
+minilang 支持模块加载。模块是位于 `syslib/` 目录（或脚本所在目录）的 `.mil` 文件。
+
+**搜索顺序**：默认先在脚本所在目录查找，找不到再在 `syslib/` 目录查找。可用 `in cwd` 或 `in syslib` 强制指定。
+
+```minilang
+// 加载整个模块，通过命名空间访问
+require math;
+println toString(math.cos(60));   // 501 (cos 60° × 1000)
+println toString(math.fib(10));   // 55
+
+// 选择性导入单个函数，直接调用
+require cos from math;
+println toString(cos(0));         // 1000
+
+// 选择性导入多个函数
+require cos, sin from math;
+println toString(sin(90));        // 1000
+
+// 指定搜索位置（有冲突时）
+require cos from math in syslib;  // 只从 syslib 加载
+require double from local in cwd; // 只从当前目录加载
+
+// require 也可以写在 REPL 里
+```
+
+### 内置模块
+
+- `syslib/math.mil`：`abs, min, max, clamp, pow, gcd, lcm, isEven, isOdd, sqrt, factorial, fib, cos, sin, pi`（三角函数按角度制，返回值放大 1000 倍）
+- `syslib/string.mil`：`isEmpty, startsWith, endsWith, contains, repeat, countChar, reverse, splitFirst`
+
+## REPL
+
+```bash
+$ ./minilang repl
+minilang REPL (type 'quit' to exit)
+mil> 1 + 2
+3
+mil> var x = 10;
+(defined)
+mil> x * 3
+30
+mil> func sq(n) { return n * n; }
+(defined)
+mil> sq(7)
+49
+mil> require math;
+(defined)
+mil> math.fib(8)
+21
+mil> quit
+```
+
+- 输入表达式自动求值并打印
+- `func`/`var`/`require` 声明会跨行保留
+- 支持多行块输入（花括号未闭合时自动续行）
+
 ## 自举验证
 
-自举编译器 `compiler.ml` 是用 minilang 语言实现的完整编译器（词法分析、递归下降解析、字节码生成、文本输出）。
+自举编译器 `compiler.mil` 是用 minilang 语言实现的完整编译器（词法分析、递归下降解析、字节码生成、文本输出）。
 
 验证流程：
-1. **Boot 编译**：C 实现的 `minilang` 编译 `compiler.ml`，输出文本字节码 A
-2. **自举编译**：将 `compiler.ml` 源码通过 stdin 喂给在 VM 上运行的 `compiler.ml`，输出文本字节码 B
+1. **Boot 编译**：C 实现的 `minilang` 编译 `compiler.mil`，输出文本字节码 A
+2. **自举编译**：将 `compiler.mil` 源码通过 stdin 喂给在 VM 上运行的 `compiler.mil`，输出文本字节码 B
 3. **对比**：A 和 B 必须逐字节相同
 
 运行验证：
@@ -123,6 +199,15 @@ func main() {
 SUCCESS: Boot and self-hosted bytecode are IDENTICAL!
 ```
 
+## .milc 字节码文件格式
+
+`build -b` 生成二进制字节码文件，以魔数 `!milc`（5 字节）开头，随后为二进制编码的常量表、函数表、全局变量名和字节码。
+
+```bash
+./minilang build -b tests/hello.mil    # 生成 tests/hello.milc
+./minilang run tests/hello.milc        # 直接运行字节码
+```
+
 ## 项目结构
 
 ```
@@ -130,20 +215,28 @@ minilang/
 ├── minilang.h        # 公共头文件（值类型、AST、字节码、VM、函数声明）
 ├── value.c           # 值类型与运算
 ├── lexer.c           # 词法分析器
-├── parser.c          # 递归下降解析器
+├── parser.c          # 递归下降解析器（含 require 模块系统）
 ├── bytecode.c        # AST → 字节码编译器
 ├── vm.c              # 栈式虚拟机
 ├── llvm_gen.c        # AST → LLVM IR 生成器
+├── milc_io.c         # .milc 字节码序列化/反序列化
 ├── runtime.c         # LLVM 后端 C 运行时
-├── main.c            # CLI 入口
-├── compiler.ml       # 自举编译器（minilang 语言实现）
+├── main.c            # CLI 入口（run/bytecode/llvm/build/repl/self-test）
+├── compiler.mil      # 自举编译器（minilang 语言实现）
+├── syslib/           # 内置模块库
+│   ├── math.mil      # 整数数学库
+│   └── string.mil    # 字符串工具库
+├── minilang.lsh      # LSH 语法高亮定义（microsoft/edit 格式）
+├── requirements.txt  # Python 依赖（llvmlite）
 ├── ir_compile.py     # LLVM IR → .o 编译脚本（llvmlite）
 ├── bootstrap_test.sh # 自举验证脚本
 ├── Makefile          # 构建文件
 └── tests/            # 测试程序
-    ├── hello.ml
-    ├── fib.ml
-    └── array_test.ml
+    ├── hello.mil
+    ├── fib.mil
+    ├── array_test.mil
+    ├── require_test.mil
+    └── require_path.mil
 ```
 
 ## 字节码格式
@@ -169,4 +262,5 @@ MINILANGBC
 - **VM 栈管理**：OP_STORE/OP_STORE_GLOBAL/OP_PRINT/OP_PRINTLN 均弹出栈顶值，确保语句级栈平衡
 - **break 实现**：循环进入时记录 break 位置栈起点，退出时回填所有 break 跳转地址，嵌套循环通过 loop_stack 隔离
 - **全局变量**：顶层 var 声明收集为全局变量，在 init 段初始化（地址 0 为 JMP 到 init 段）
+- **模块系统**：require 在解析阶段加载模块源码，函数以 `模块名.函数名` 命名并注册，模块内部互调也加上前缀；别名（`require f from m`）建立 `f` → `m.f` 映射，字节码和 LLVM 后端统一解析
 - **自举确定性**：boot 编译器和自举编译器使用相同的字节码编码规则，确保输出一致

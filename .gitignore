@@ -1,6 +1,8 @@
 *.ll
 *.o
+*.milc
 /minilang
 /test/hello
 /test/array_test
 /test/fib
+.DS_Store

@@ -1,0 +1,76 @@
+// string.mil - string utility library for minilang
+// Pure string operations on the built-in string type, no external I/O.
+
+func isEmpty(s) {
+    return len(s) == 0;
+}
+
+func startsWith(s, prefix) {
+    var pl = len(prefix);
+    if (pl > len(s)) { return 0; }
+    return substr(s, 0, pl) == prefix;
+}
+
+func endsWith(s, suffix) {
+    var sl = len(suffix);
+    if (sl > len(s)) { return 0; }
+    return substr(s, len(s) - sl, sl) == suffix;
+}
+
+func contains(s, sub) {
+    var sl = len(s);
+    var bl = len(sub);
+    if (bl == 0) { return 1; }
+    if (bl > sl) { return 0; }
+    var i = 0;
+    while (i <= sl - bl) {
+        if (substr(s, i, bl) == sub) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+
+func repeat(s, n) {
+    var r = "";
+    var i = 0;
+    while (i < n) {
+        r = r + s;
+        i = i + 1;
+    }
+    return r;
+}
+
+func countChar(s, c) {
+    var n = 0;
+    var i = 0;
+    while (i < len(s)) {
+        if (charAt(s, i) == c) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+func reverse(s) {
+    var r = "";
+    var i = len(s) - 1;
+    while (i >= 0) {
+        r = r + charAt(s, i);
+        i = i - 1;
+    }
+    return r;
+}
+
+// split first occurrence
+func splitFirst(s, sep) {
+    var sl = len(s);
+    var bl = len(sep);
+    if (bl == 0) { return s; }
+    var i = 0;
+    while (i <= sl - bl) {
+        if (substr(s, i, bl) == sep) {
+            return substr(s, 0, i);
+        }
+        i = i + 1;
+    }
+    return s;
+}

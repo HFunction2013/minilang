@@ -1,0 +1,10 @@
+require word in syslib;
+require shout from word in syslib;
+
+func main() {
+    println word.shout("hi");
+    println toString(word.isPalindrome("racecar"));
+    println toString(word.isPalindrome("hello"));
+    println shout("ok");
+    return 0;
+}

@@ -1,0 +1,143 @@
+// math.mil - integer math library for minilang
+// All functions are pure integer math, no external I/O.
+// Trigonometric functions take degrees (0-360) and return values scaled by 1000.
+
+func abs(x) {
+    if (x < 0) { return -x; }
+    return x;
+}
+
+func min(a, b) {
+    if (a < b) { return a; }
+    return b;
+}
+
+func max(a, b) {
+    if (a > b) { return a; }
+    return b;
+}
+
+func clamp(x, lo, hi) {
+    if (x < lo) { return lo; }
+    if (x > hi) { return hi; }
+    return x;
+}
+
+// integer power
+func pow(base, exp) {
+    var result = 1;
+    var i = 0;
+    while (i < exp) {
+        result = result * base;
+        i = i + 1;
+    }
+    return result;
+}
+
+// greatest common divisor (Euclid)
+func gcd(a, b) {
+    if (a < 0) { a = -a; }
+    if (b < 0) { b = -b; }
+    while (b != 0) {
+        var t = b;
+        b = a % b;
+        a = t;
+    }
+    return a;
+}
+
+// least common multiple
+func lcm(a, b) {
+    if (a == 0 || b == 0) { return 0; }
+    return abs(a / gcd(a, b) * b);
+}
+
+func isEven(n) {
+    return n % 2 == 0;
+}
+
+func isOdd(n) {
+    return n % 2 != 0;
+}
+
+// integer square root (Newton's method)
+func sqrt(n) {
+    if (n < 0) { return 0; }
+    var x = n;
+    var y = (x + 1) / 2;
+    while (y < x) {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    return x;
+}
+
+// factorial
+func factorial(n) {
+    var r = 1;
+    var i = 2;
+    while (i <= n) {
+        r = r * i;
+        i = i + 1;
+    }
+    return r;
+}
+
+// Fibonacci
+func fib(n) {
+    if (n < 2) { return n; }
+    var a = 0;
+    var b = 1;
+    var i = 2;
+    while (i <= n) {
+        var t = a + b;
+        a = b;
+        b = t;
+        i = i + 1;
+    }
+    return b;
+}
+
+// cosine of angle in degrees, scaled by 1000
+// Uses a simple 8th-order Taylor series on radians converted from degrees.
+func cos(deg) {
+    var d = deg % 360;
+    if (d < 0) { d = d + 360; }
+    var neg = 0;
+    if (d > 180) {
+        neg = 1 - neg;
+        d = 360 - d;
+    }
+    if (d > 90) {
+        neg = 1 - neg;
+        d = 180 - d;
+    }
+    // d in [0,90]. x = radians * 1000 = d * pi/180 * 1000 ~ d * 3142 / 180
+    var x = d * 3142 / 180;
+    // cos(x) = 1 - x^2/2! + x^4/4! - x^6/6! + x^8/8!  (x in scaled units)
+    // All arithmetic keeps a 1000x scale.
+    var x2 = x * x / 1000;
+    var x4 = x2 * x2 / 1000;
+    var x6 = x4 * x2 / 1000;
+    var x8 = x4 * x4 / 1000;
+    var r = 1000;
+    r = r - x2 / 2;
+    r = r + x4 / 24;
+    r = r - x6 / 720;
+    r = r + x8 / 40320;
+    if (r > 1000) { r = 1000; }
+    if (r < -1000) { r = -1000; }
+    if (neg) { r = -r; }
+    return r;
+}
+
+// sine of angle in degrees, scaled by 1000
+func sin(deg) {
+    // sin(x) = cos(90 - x)
+    return cos(90 - (deg % 360));
+}
+
+// constant pi scaled by 1000
+func pi() {
+    return 3142;
+}
