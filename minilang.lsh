@@ -1,6 +1,5 @@
 #[display_name = "minilang"]
 #[path = "**/*.mil"]
-#[path = "**/*.milc"]
 
 pub fn minilang() {
     until /$/ {
@@ -31,10 +30,8 @@ pub fn minilang() {
             yield constant.language;
         } else if /-?(?:0x[\da-fA-F_]+|\d[\d_]*)/ {
             yield constant.numeric;
-        } else if /\b(?:len|charAt|substr|toString|toInt|strcmp|readAll|array|abs|min|max|gcd|sqrt|pow|cos|sin)\b/ {
-            yield support.function;
         } else if /(\w+)\s*\(/ {
-            yield $1 as function;
+            yield $1 as method;
         } else if /\w+/ {
             // Gobble word chars to align the next iteration on a word boundary.
         }
