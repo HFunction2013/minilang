@@ -1446,6 +1446,54 @@ func output_bytecode(state) {
     while (i < ccount) { result = result + chunks[i]; i = i + 1; }
     return result;
 }
+// Full bytecode text including globals (for binary .milc encoding)
+// Format: same as output_bytecode but with global_count + global_names between funcs and instrs
+func output_bytecode_full(state) {
+    var chunks = array(8192, "");
+    var ccount = 0;
+    var cur = "MINILANGBC\n";
+    cur = cur + toString(state[7]) + "\n";
+    var i = 0;
+    while (i < state[7]) {
+        var c = state[6][i];
+        if (c[0] == 0) {
+            cur = cur + "0 " + toString(c[1]) + "\n";
+        } else {
+            cur = cur + "1 " + escape_string(c[2]) + "\n";
+        }
+        if (len(cur) > 4096) { chunks[ccount] = cur; ccount = ccount + 1; cur = ""; }
+        i = i + 1;
+    }
+    var fcount = state[8][4];
+    cur = cur + toString(fcount) + "\n";
+    i = 0;
+    while (i < fcount) {
+        cur = cur + state[8][0][i] + " " + toString(state[8][1][i]) + " " + toString(state[8][2][i]) + " " + toString(state[8][3][i]) + "\n";
+        if (len(cur) > 4096) { chunks[ccount] = cur; ccount = ccount + 1; cur = ""; }
+        i = i + 1;
+    }
+    // Globals (extra section not in output_bytecode)
+    cur = cur + toString(state[16]) + "\n";
+    i = 0;
+    while (i < state[16]) {
+        cur = cur + state[15][i] + "\n";
+        if (len(cur) > 4096) { chunks[ccount] = cur; ccount = ccount + 1; cur = ""; }
+        i = i + 1;
+    }
+    var num_instr = state[11] / 3;
+    cur = cur + toString(num_instr) + "\n";
+    i = 0;
+    while (i < num_instr) {
+        cur = cur + toString(state[10][i * 3]) + " " + toString(state[10][i * 3 + 1]) + " " + toString(state[10][i * 3 + 2]) + "\n";
+        if (len(cur) > 4096) { chunks[ccount] = cur; ccount = ccount + 1; cur = ""; }
+        i = i + 1;
+    }
+    if (len(cur) > 0) { chunks[ccount] = cur; ccount = ccount + 1; }
+    var result = "";
+    i = 0;
+    while (i < ccount) { result = result + chunks[i]; i = i + 1; }
+    return result;
+}
 // ===== Main =====
 func main() {
     var n = argc();

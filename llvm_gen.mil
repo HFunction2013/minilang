@@ -9,6 +9,7 @@ var g_ir_chunk_count = 0;
 var g_ir_cur = "";
 var g_global_buf = "";
 var g_alloca_buf = "";
+var g_entry_chunk = 0;  // chunk index containing "entry:\n" (for alloca insertion)
 var g_temp_counter = 0;
 var g_block_counter = 0;
 var g_var_names = array(256, 0);
@@ -605,6 +606,8 @@ func generate_ir(state) {
         sig = sig + ") {\n";
         ir_emit(sig);
         ir_emit("entry:\n");
+        flush_cur();
+        g_entry_chunk = g_ir_chunk_count - 1;
         // Add params as vars
         pi = 0;
         while (pi < param_count) {
@@ -634,26 +637,15 @@ func generate_ir(state) {
         // Actually, let's just emit allocas before param stores by tracking position
         // For simplicity, we'll do a string replacement approach
         if (len(g_alloca_buf) > 0) {
-            var buf = join_ir();
-            var buf_len = len(buf);
-            var entry_pos = -1;
-            var si = buf_len - 1;
-            while (si >= 6) {
-                if (charAt(buf, si) == 10 && charAt(buf, si - 1) == 58 && charAt(buf, si - 2) == 121 && charAt(buf, si - 3) == 114 && charAt(buf, si - 4) == 116 && charAt(buf, si - 5) == 110 && charAt(buf, si - 6) == 101) {
-                    entry_pos = si + 1;
-                    si = -1;
-                } else {
-                    si = si - 1;
-                }
+            flush_cur();
+            // Insert alloca chunk right after the entry chunk (no string scan needed)
+            var si = g_ir_chunk_count;
+            while (si > g_entry_chunk + 1) {
+                g_ir_chunks[si] = g_ir_chunks[si - 1];
+                si = si - 1;
             }
-            if (entry_pos >= 0) {
-                var before = substr(buf, 0, entry_pos);
-                var after = substr(buf, entry_pos, buf_len - entry_pos);
-                buf = before + g_alloca_buf + after;
-            }
-            g_ir_chunks[0] = buf;
-            g_ir_chunk_count = 1;
-            g_ir_cur = "";
+            g_ir_chunks[g_entry_chunk + 1] = g_alloca_buf;
+            g_ir_chunk_count = g_ir_chunk_count + 1;
         }
         ir_emit("}\n\n");
         fi = fi + 1;

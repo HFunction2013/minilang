@@ -5,7 +5,7 @@
 //   dump-text <file>     Compile and dump text bytecode
 //   llvm <file>          Compile and output LLVM IR
 //   build [opts] <file>  Compile to native executable or bytecode file
-//     -b, --bytecode     write bytecode file (.milc text format)
+//     -b, --bytecode     write binary bytecode file (.milc, magic "!milc")
 //     -e, --executable   write native executable (LLVM IR + link, default)
 require compiler;
 require vm;
@@ -20,7 +20,7 @@ func print_usage() {
     println "  repl                 Start interactive REPL";
     println "  self-test            Run self-hosting verification";
     println "  build [opts] <file>  Build native executable or bytecode";
-    println "    -b, --bytecode     write .milc bytecode file";
+    println "    -b, --bytecode     write binary .milc (magic \"!milc\")";
     println "    -e, --executable   write native executable (default)";
 }
 func is_bytecode_text(src) {
@@ -68,6 +68,16 @@ func get_toolchain_dir() {
     }
     return "./";
 }
+// Detect binary .milc magic "!milc" (readFile truncates at \0, but first 5 bytes are safe)
+func is_milc_binary(src) {
+    if (len(src) < 5) { return 0; }
+    if (charAt(src, 0) != 33) { return 0; }
+    if (charAt(src, 1) != 109) { return 0; }
+    if (charAt(src, 2) != 105) { return 0; }
+    if (charAt(src, 3) != 108) { return 0; }
+    if (charAt(src, 4) != 99) { return 0; }
+    return 1;
+}
 func cmd_run(n) {
     if (n < 3) {
         println "Error: run requires a filename";
@@ -76,7 +86,14 @@ func cmd_run(n) {
     var file = argv(2);
     var src = readFile(file);
     var bc_text = "";
-    if (is_bytecode_text(src)) {
+    if (is_milc_binary(src)) {
+        var tdir = get_toolchain_dir();
+        var tmppath = file + ".decoded.txt";
+        var cmd = "python3 " + tdir + "milc_decode.py " + file + " " + tmppath;
+        system(cmd);
+        bc_text = readFile(tmppath);
+        system("rm -f " + tmppath);
+    } else if (is_bytecode_text(src)) {
         bc_text = src;
     } else {
         bc_text = compile_to_bytecode(file, src);
@@ -113,18 +130,30 @@ func cmd_llvm(n) {
     print ir;
     return 0;
 }
-// build -b: compile to text bytecode file
+// build -b: compile to binary .milc file (magic "!milc", matches boot exactly)
 func cmd_build_bytecode(file) {
     var src = readFile(file);
-    var bc = compile_to_bytecode(file, src);
+    var state = parse_source(file, src);
+    compiler.compile_program(state);
+    var bc_full = compiler.output_bytecode_full(state);
     var outpath = replace_ext(file, ".milc");
-    var ok = writeFile(outpath, bc);
-    if (ok == 1) {
-        println "Bytecode written: " + outpath;
-        return 0;
+    var tmppath = outpath + ".tmp.txt";
+    var ok = writeFile(tmppath, bc_full);
+    if (ok != 1) {
+        println "Error: cannot write temp file";
+        return 1;
     }
-    println "Error: cannot write " + outpath;
-    return 1;
+    var tdir = get_toolchain_dir();
+    var cmd = "python3 " + tdir + "milc_encode.py " + tmppath + " " + outpath;
+    var rc = system(cmd);
+    // Clean up temp file
+    system("rm -f " + tmppath);
+    if (rc != 0) {
+        println "Error: binary encoding failed";
+        return 1;
+    }
+    println "Bytecode written: " + outpath + " (magic \"!milc\")";
+    return 0;
 }
 // build -e: compile to native executable via LLVM IR + gcc
 func cmd_build_executable(file) {
