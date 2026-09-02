@@ -24,7 +24,7 @@ pub fn minilang() {
             }
         } else if /(?:var|func|if|else|while|return|break|require|from|in)\>/ {
             yield keyword.control;
-        } else if /(?:print|println)\>/ {
+        } else if /(?:println|print)\>/ {
             yield keyword.other;
         } else if /(?:true|false|nil)\>/ {
             yield constant.language;
