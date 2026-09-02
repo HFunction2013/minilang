@@ -4,7 +4,9 @@
 //   Outputs LLVM IR to stdout (redirect to .ll file)
 require compiler;
 // ===== IR generation state =====
-var g_ir_buf = "";
+var g_ir_chunks = array(512, "");
+var g_ir_chunk_count = 0;
+var g_ir_cur = "";
 var g_global_buf = "";
 var g_alloca_buf = "";
 var g_temp_counter = 0;
@@ -19,8 +21,26 @@ var g_break_targets = array(64, 0);
 var g_break_count = 0;
 var g_str_counter = 0;
 // ===== Helpers =====
+func flush_cur() {
+    if (len(g_ir_cur) > 0) {
+        g_ir_chunks[g_ir_chunk_count] = g_ir_cur;
+        g_ir_chunk_count = g_ir_chunk_count + 1;
+        g_ir_cur = "";
+    }
+}
+func join_ir() {
+    flush_cur();
+    var result = "";
+    var i = 0;
+    while (i < g_ir_chunk_count) {
+        result = result + g_ir_chunks[i];
+        i = i + 1;
+    }
+    return result;
+}
 func ir_emit(s) {
-    g_ir_buf = g_ir_buf + s;
+    g_ir_cur = g_ir_cur + s;
+    if (len(g_ir_cur) > 8192) { flush_cur(); }
 }
 func ir_emit_global(s) {
     g_global_buf = g_global_buf + s;
@@ -498,7 +518,8 @@ var g_globals_ref = 0;
 var g_global_count_ref = 0;
 // ===== Main IR generation =====
 func generate_ir(state) {
-    g_ir_buf = "";
+    g_ir_chunk_count = 0;
+    g_ir_cur = "";
     g_global_buf = "";
     g_temp_counter = 0;
     g_block_counter = 0;
@@ -613,12 +634,12 @@ func generate_ir(state) {
         // Actually, let's just emit allocas before param stores by tracking position
         // For simplicity, we'll do a string replacement approach
         if (len(g_alloca_buf) > 0) {
-            // Find last "entry:\n" (e,n,t,r,y,:,\n) - si points to final \n
-            var buf_len = len(g_ir_buf);
+            var buf = join_ir();
+            var buf_len = len(buf);
             var entry_pos = -1;
             var si = buf_len - 1;
             while (si >= 6) {
-                if (charAt(g_ir_buf, si) == 10 && charAt(g_ir_buf, si - 1) == 58 && charAt(g_ir_buf, si - 2) == 121 && charAt(g_ir_buf, si - 3) == 114 && charAt(g_ir_buf, si - 4) == 116 && charAt(g_ir_buf, si - 5) == 110 && charAt(g_ir_buf, si - 6) == 101) {
+                if (charAt(buf, si) == 10 && charAt(buf, si - 1) == 58 && charAt(buf, si - 2) == 121 && charAt(buf, si - 3) == 114 && charAt(buf, si - 4) == 116 && charAt(buf, si - 5) == 110 && charAt(buf, si - 6) == 101) {
                     entry_pos = si + 1;
                     si = -1;
                 } else {
@@ -626,10 +647,13 @@ func generate_ir(state) {
                 }
             }
             if (entry_pos >= 0) {
-                var before = substr(g_ir_buf, 0, entry_pos);
-                var after = substr(g_ir_buf, entry_pos, buf_len - entry_pos);
-                g_ir_buf = before + g_alloca_buf + after;
+                var before = substr(buf, 0, entry_pos);
+                var after = substr(buf, entry_pos, buf_len - entry_pos);
+                buf = before + g_alloca_buf + after;
             }
+            g_ir_chunks[0] = buf;
+            g_ir_chunk_count = 1;
+            g_ir_cur = "";
         }
         ir_emit("}\n\n");
         fi = fi + 1;
@@ -643,11 +667,12 @@ func generate_ir(state) {
     ir_emit("  ret i32 0\n");
     ir_emit("}\n");
     // Prepend global declarations before first "define"
+    var buf2 = join_ir();
     var first_def = -1;
-    var buf_len2 = len(g_ir_buf);
+    var buf_len2 = len(buf2);
     var sj = 0;
     while (sj < buf_len2 - 7) {
-        if (charAt(g_ir_buf, sj) == 10 && charAt(g_ir_buf, sj + 1) == 100 && charAt(g_ir_buf, sj + 2) == 101 && charAt(g_ir_buf, sj + 3) == 102 && charAt(g_ir_buf, sj + 4) == 105 && charAt(g_ir_buf, sj + 5) == 110 && charAt(g_ir_buf, sj + 6) == 101) {
+        if (charAt(buf2, sj) == 10 && charAt(buf2, sj + 1) == 100 && charAt(buf2, sj + 2) == 101 && charAt(buf2, sj + 3) == 102 && charAt(buf2, sj + 4) == 105 && charAt(buf2, sj + 5) == 110 && charAt(buf2, sj + 6) == 101) {
             first_def = sj + 1;
             sj = buf_len2;
         } else {
@@ -655,11 +680,11 @@ func generate_ir(state) {
         }
     }
     if (first_def >= 0 && len(g_global_buf) > 0) {
-        var before2 = substr(g_ir_buf, 0, first_def);
-        var after2 = substr(g_ir_buf, first_def, buf_len2 - first_def);
-        g_ir_buf = before2 + g_global_buf + "\n" + after2;
+        var before2 = substr(buf2, 0, first_def);
+        var after2 = substr(buf2, first_def, buf_len2 - first_def);
+        buf2 = before2 + g_global_buf + "\n" + after2;
     }
-    return g_ir_buf;
+    return buf2;
 }
 // ===== Main =====
 func main() {

@@ -187,6 +187,35 @@ for f in tests/hello.mil tests/fib.mil tests/array_test.mil tests/nested_test.mi
 done
 rm -f /tmp/sh_compiler_A compiler.ll compiler.o compiler /tmp/sh_A_*.ll /tmp/sh_B_*.ll /tmp/sh_A_*.o /tmp/sh_B_*.o
 
+
+echo "=== 12. Native main self-host: A builds itself -> B, A/B binary identical ==="
+echo "  A = boot-built main.mil; B = A-built main.mil (native, no OOM after IR buffer optimization)"
+rm -f main main.ll main.o main_A
+./minilang build main.mil > /dev/null 2>&1
+if [ -f main ]; then
+    cp main main_A
+    rm -f main main.ll main.o
+    ./main_A build main.mil > /dev/null 2>&1
+    if [ -f main ]; then
+        check "OK" "OK" "A (main_A) builds main.mil -> B (main) natively"
+        ha=$(sha256sum main_A | cut -d' ' -f1)
+        hb=$(sha256sum main | cut -d' ' -f1)
+        check "$ha" "$hb" "A/B native binary sha256 identical ($ha)"
+        echo "  B runs all test programs"
+        for f in tests/hello.mil tests/fib.mil tests/array_test.mil tests/nested_test.mil tests/require_test.mil tests/require_path.mil; do
+            base=$(basename "$f" .mil)
+            ./main run "$f" > /tmp/sh_B2_$base.out 2>/dev/null
+            ./minilang run "$f" > /tmp/sh_ref2_$base.out 2>/dev/null
+            check "$(diff -q /tmp/sh_ref2_$base.out /tmp/sh_B2_$base.out >/dev/null && echo OK)" "OK" "B (native) runs $base"
+        done
+    else
+        check "FAIL" "OK" "A (main_A) builds main.mil -> B (main) natively"
+    fi
+    rm -f main main.ll main.o main_A
+else
+    check "FAIL" "OK" "boot builds main.mil natively"
+fi
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ $FAIL -eq 0 ]; then
