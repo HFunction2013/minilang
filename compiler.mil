@@ -111,6 +111,7 @@ var OP_READFILE = 43;
 var OP_FILEEXISTS = 44;
 var OP_WRITEFILE = 45;
 var OP_SYSTEM = 46;
+var OP_READLINE = 47;
 // ===== State layout =====
 // 0=src, 1=pos, 2=line, 3=tokens, 4=tok_count
 // 5=parse_pos, 6=constants, 7=const_count, 8=funcs, 9=func_count
@@ -177,6 +178,7 @@ func is_builtin_name(name) {
     if (strcmp(name, "fileExists") == 0) { return 1; }
     if (strcmp(name, "writeFile") == 0) { return 1; }
     if (strcmp(name, "system") == 0) { return 1; }
+    if (strcmp(name, "readLine") == 0) { return 1; }
     return 0;
 }
 func dirname(path) {
@@ -878,6 +880,14 @@ func load_module(state, module_name, search_mode) {
     var sub = make_state(src);
     sub[28] = state[28];
     sub[29] = state[29];
+    // Propagate already-loaded modules so nested require is skipped
+    // (avoids duplicate module loading and duplicate function/global defs)
+    var pmi = 0;
+    while (pmi < state[24]) {
+        sub[23][sub[24]] = state[23][pmi];
+        sub[24] = sub[24] + 1;
+        pmi = pmi + 1;
+    }
     lex_source(sub);
     parse_program(sub);
     // Build prefix
@@ -903,14 +913,22 @@ func load_module(state, module_name, search_mode) {
         state[9] = fidx + 1;
         i = i + 1;
     }
-    // Merge globals into main state
+    // Merge globals into main state (deduplicate by name)
     i = 0;
     while (i < sub[18]) {
-        var gidx = state[18];
-        state[15][gidx] = sub[15][i];
-        state[17][gidx] = sub[17][i];
-        state[16] = gidx + 1;
-        state[18] = gidx + 1;
+        var gdup = 0;
+        var gi = 0;
+        while (gi < state[18]) {
+            if (strcmp(state[15][gi], sub[15][i]) == 0) { gdup = 1; }
+            gi = gi + 1;
+        }
+        if (gdup == 0) {
+            var gidx = state[18];
+            state[15][gidx] = sub[15][i];
+            state[17][gidx] = sub[17][i];
+            state[16] = gidx + 1;
+            state[18] = gidx + 1;
+        }
         i = i + 1;
     }
     // Record module info with exports
@@ -1280,6 +1298,8 @@ func compile_expr(state, node) {
         } else if (strcmp(name, "system") == 0) {
             compile_expr(state, node[3][0]);
             emit(state, OP_SYSTEM, 0, 0);
+        } else if (strcmp(name, "readLine") == 0) {
+            emit(state, OP_READLINE, 0, 0);
         } else {
             // Resolve alias
             var cname = name;

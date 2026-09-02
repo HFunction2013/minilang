@@ -496,6 +496,11 @@ static char *compile_expr_ir(IRGen *g, Node *n) {
                 ir_emit(g, "  %s = call %%Value @ml_system(%%Value %s)\n", r, a);
                 free(a); return r;
             }
+            if (strcmp(n->call.name, "readLine") == 0) {
+                char *r = new_temp(g);
+                ir_emit(g, "  %s = call %%Value @ml_readline()\n", r);
+                return r;
+            }
             // User function call
             // Resolve alias
             const char *cname = n->call.name;
@@ -581,6 +586,7 @@ char *generate_llvm_ir(Parser *p) {
     ir_emit(&g, "declare %%Value @ml_fileexists(%%Value)\n");
     ir_emit(&g, "declare %%Value @ml_writefile(%%Value, %%Value)\n");
     ir_emit(&g, "declare %%Value @ml_system(%%Value)\n");
+    ir_emit(&g, "declare %%Value @ml_readline()\n");
     ir_emit(&g, "declare void @ml_set_args(i32, i8**)\n");
     ir_emit(&g, "declare %%Value @ml_array_get(%%Value, i64)\n");
     ir_emit(&g, "declare void @ml_array_set(%%Value, i64, %%Value)\n");

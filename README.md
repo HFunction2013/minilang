@@ -18,7 +18,7 @@
   - `main.mil`：统一 CLI 入口（对应 main.c）
 - **自举编译器**：`compiler.mil` 能编译自身，输出与 C boot 编译器逐字节一致
 - **无外部依赖**：不使用文件、网络等外部交互（除 console I/O）
-- **内置函数**：`len`, `charAt`, `substr`, `toString`, `toInt`, `strcmp`, `readAll`, `array`, `argc`, `argv`, `readFile`, `fileExists`, `writeFile`, `system`
+- **内置函数**：`len`, `charAt`, `substr`, `toString`, `toInt`, `strcmp`, `readAll`, `array`, `argc`, `argv`, `readFile`, `fileExists`, `writeFile`, `system`, `readLine`
 - **模块系统（require）**：从 syslib 或脚本目录加载模块，支持命名空间访问和选择性导入
 - **REPL**：交互式命令行，支持多行输入、表达式求值、跨行保留函数/变量/模块
 - **.milc 字节码文件**：可编译为二进制字节码文件，随时加载运行
@@ -67,12 +67,25 @@ pip install -r requirements.txt
 ./minilang build tests/hello.mil    # 默认 -e
 ./tests/hello
 
-# 7. 交互式 REPL
+# 7. 交互式 REPL（mil 版：echo 管道可批处理测试）
 ./minilang repl
+printf 'println 42;\nquit\n' | ./minilang run main.mil repl
 
-# 8. 自举验证
+# 8. 自举验证（完整 A/B 双编译器验收，含 bytecode/self-test/repl）
 ./bootstrap_test.sh
+./full_selfhost_test.sh
 ```
+
+`main.mil`（mil 版统一入口）提供与 boot `minilang` 完全一致的全部命令：
+`run` / `bytecode` / `dump-text` / `llvm` / `build -b|-e` / `repl` / `self-test`。
+其中 `self-test` 用 mil 编译器编译 `compiler.mil` 并输出其字节码（与 boot 逐字节一致）。
+
+```bash
+# 用 mil 版统一入口运行同一批命令
+./minilang run main.mil bytecode tests/hello.mil
+./minilang run main.mil self-test
+```
+
 
 ## 语言语法
 
@@ -250,11 +263,18 @@ SUCCESS: Boot and self-hosted bytecode are IDENTICAL!
 # 输出 LLVM IR
 ./minilang run main.mil llvm tests/hello.mil
 
+# 人类可读字节码反汇编（与 boot bytecode 输出逐字节一致）
+./minilang run main.mil bytecode tests/hello.mil
+
 # 编译为 .milc 字节码文件（文本格式）
 ./minilang run main.mil build -b tests/hello.mil
 
 # 编译为原生可执行文件（LLVM IR + ir_compile.py + gcc）
 ./minilang run main.mil build -e tests/hello.mil
+
+# 交互式 REPL 与自举自检
+./minilang run main.mil repl
+./minilang run main.mil self-test
 ```
 
 ### 完整自举链路验证
@@ -273,10 +293,13 @@ diff /tmp/boot.txt /tmp/selfhost.txt  # 完全一致
 
 ## .milc 字节码文件格式
 
-`build -b` 生成二进制字节码文件，以魔数 `!milc`（5 字节）开头，随后为二进制编码的常量表、函数表、全局变量名和字节码。
+- **boot（C 实现）**：`build -b` 生成二进制字节码文件，以魔数 `!milc`（5 字节）开头。
+- **mil 版（main.mil）**：由于 mil 语言本身无二进制写能力，`build -b` 输出文本字节码
+  （`MINILANGBC` 格式，与 `dump-text` 相同），仍可被 `vm.mil` 加载运行，功能等价。
 
 ```bash
-./minilang build -b tests/hello.mil    # 生成 tests/hello.milc
+./minilang build -b tests/hello.mil    # boot：生成二进制 tests/hello.milc（魔数 !milc）
+./minilang run main.mil build -b tests/hello.mil  # mil 版：生成文本 .milc
 ./minilang run tests/hello.milc        # 直接运行字节码
 ```
 

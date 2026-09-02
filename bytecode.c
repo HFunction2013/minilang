@@ -376,6 +376,10 @@ static void compile_expr(Compiler *c, Node *n) {
                 bc_emit(c->prog, OP_SYSTEM, 0, 0);
                 break;
             }
+            if (strcmp(n->call.name, "readLine") == 0) {
+                bc_emit(c->prog, OP_READLINE, 0, 0);
+                break;
+            }
             // User-defined function
             // Resolve alias: if n->call.name is an alias, use target name
             const char *cname = n->call.name;

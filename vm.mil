@@ -50,6 +50,7 @@ var OP_READFILE = 43;
 var OP_FILEEXISTS = 44;
 var OP_WRITEFILE = 45;
 var OP_SYSTEM = 46;
+var OP_READLINE = 47;
 // ===== Value types =====
 var VAL_NIL = 0;
 var VAL_INT = 1;
@@ -626,6 +627,9 @@ func run_vm() {
             var cmdv = pop();
             var rc = system(cmdv[1]);
             push(v_int(rc));
+        } else if (op == OP_READLINE) {
+            var line = readLine();
+            push(v_str(line));
         } else {
             print "VM error: unknown opcode ";
             println toString(op);

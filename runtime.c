@@ -216,6 +216,19 @@ Value ml_system(Value cmdv) {
     return vint(rc);
 }
 
+Value ml_readline(void) {
+    char buf[8192];
+    if (fgets(buf, sizeof(buf), stdin) == NULL) {
+        Value e = {TAG_STR, (int64_t)(intptr_t)strdup("")};
+        return e;
+    }
+    size_t n = strlen(buf);
+    while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) buf[--n] = '\0';
+    char *s = strdup(buf);
+    Value v = {TAG_STR, (int64_t)(intptr_t)s};
+    return v;
+}
+
 Value ml_array_get(Value arr, int64_t idx) {
     if (arr.tag == TAG_ARR) {
         Array *a = carr(arr);

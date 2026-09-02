@@ -14,8 +14,11 @@ func print_usage() {
     println "Usage: main <command> [args...]";
     println "Commands:";
     println "  run <file>           Compile and run .mil (or run text bytecode)";
+    println "  bytecode <file>      Compile and dump bytecode (human readable)";
     println "  dump-text <file>     Compile and dump text bytecode";
     println "  llvm <file>          Compile to LLVM IR";
+    println "  repl                 Start interactive REPL";
+    println "  self-test            Run self-hosting verification";
     println "  build [opts] <file>  Build native executable or bytecode";
     println "    -b, --bytecode     write .milc bytecode file";
     println "    -e, --executable   write native executable (default)";
@@ -182,6 +185,204 @@ func cmd_build(n) {
     }
     return cmd_build_executable(file);
 }
+// Map opcode number to mnemonic (matches boot dump_bytecode)
+func opcode_name(op) {
+    var names = array(64, "???");
+    names[0] = "CONST";
+    names[1] = "NIL";
+    names[2] = "ADD";
+    names[3] = "SUB";
+    names[4] = "MUL";
+    names[5] = "DIV";
+    names[6] = "MOD";
+    names[7] = "NEG";
+    names[8] = "EQ";
+    names[9] = "NEQ";
+    names[10] = "LT";
+    names[11] = "GT";
+    names[12] = "LTE";
+    names[13] = "GTE";
+    names[14] = "AND";
+    names[15] = "OR";
+    names[16] = "NOT";
+    names[17] = "LOAD";
+    names[18] = "STORE";
+    names[19] = "PRINT";
+    names[20] = "PRINTLN";
+    names[21] = "JMP";
+    names[22] = "JMPF";
+    names[23] = "CALL";
+    names[24] = "RET";
+    names[25] = "ARRAY";
+    names[26] = "INDEX";
+    names[27] = "INDEX_SET";
+    names[28] = "POP";
+    names[29] = "HALT";
+    names[30] = "CONCAT";
+    names[31] = "LEN";
+    names[32] = "CHARAT";
+    names[33] = "SUBSTR";
+    names[34] = "TOSTRING";
+    names[35] = "TOINT";
+    names[36] = "STRCMP";
+    names[37] = "LOAD_GLOBAL";
+    names[38] = "STORE_GLOBAL";
+    names[39] = "READALL";
+    names[40] = "MAKE_ARRAY";
+    names[41] = "ARGC";
+    names[42] = "ARGV";
+    names[43] = "READFILE";
+    names[44] = "FILEEXISTS";
+    names[45] = "WRITEFILE";
+    names[46] = "SYSTEM";
+    return names[op];
+}
+// Right-align a number in a field of width w (matches boot %6d)
+func pad_right(s, w) {
+    var r = s;
+    while (len(r) < w) {
+        r = " " + r;
+    }
+    return r;
+}
+// Left-align a name in a field of width w (matches boot %-12s)
+func pad_left(s, w) {
+    var r = s;
+    while (len(r) < w) {
+        r = r + " ";
+    }
+    return r;
+}
+// cmd bytecode: human-readable disassembly (matches boot dump_bytecode)
+func cmd_bytecode(n) {
+    if (n < 3) {
+        println "Error: bytecode requires a filename";
+        return 1;
+    }
+    var file = argv(2);
+    var src = readFile(file);
+    var state = parse_source(file, src);
+    compiler.compile_program(state);
+    // Constants
+    println "=== Constants (" + toString(state[7]) + ") ===";
+    var i = 0;
+    while (i < state[7]) {
+        var c = state[6][i];
+        var out = "  [" + toString(i) + "] ";
+        if (c[0] == 0) {
+            out = out + toString(c[1]);
+        } else if (c[0] == 1) {
+            out = out + toString(c[2]);
+        } else {
+            out = out + "nil";
+        }
+        println out;
+        i = i + 1;
+    }
+    // Functions
+    var fcount = state[8][4];
+    println "=== Functions (" + toString(fcount) + ") ===";
+    i = 0;
+    while (i < fcount) {
+        println "  [" + toString(i) + "] " + state[8][0][i] + " addr=" + toString(state[8][1][i]) + " params=" + toString(state[8][2][i]) + " locals=" + toString(state[8][3][i]);
+        i = i + 1;
+    }
+    // Instructions
+    var num_instr = state[11] / 3;
+    println "=== Bytecode (" + toString(num_instr) + " instructions) ===";
+    i = 0;
+    while (i < num_instr) {
+        var op = state[10][i * 3];
+        var op1 = state[10][i * 3 + 1];
+        var op2 = state[10][i * 3 + 2];
+        var idx_s = pad_right(toString(i), 4);
+        var name_s = pad_left(opcode_name(op), 12);
+        var op1_s = pad_right(toString(op1), 6);
+        var op2_s = pad_right(toString(op2), 6);
+        println "  " + idx_s + ": " + name_s + " " + op1_s + " " + op2_s;
+        i = i + 1;
+    }
+    return 0;
+}
+// cmd self-test: compile compiler.mil with the mil compiler and dump its bytecode
+func cmd_self_test() {
+    println "=== Self-hosting test ===";
+    var src = readFile("compiler.mil");
+    var state = parse_source("compiler.mil", src);
+    compiler.compile_program(state);
+    var bc = compiler.output_bytecode(state);
+    print bc;
+    println "(mil self-test: compiler.mil bytecode dumped above)";
+    return 0;
+}
+// cmd repl: interactive REPL (matches boot repl)
+func cmd_repl() {
+    println "minilang REPL (type 'quit' to exit)";
+    var env = "";
+    while (1) {
+        print "mil> ";
+        var line = readLine();
+        if (len(line) == 0) { println ""; break; }
+        if (strcmp(line, "quit") == 0 || strcmp(line, "exit") == 0) { break; }
+        // Multi-line block support: if braces unbalanced, keep reading
+        var open_b = 0;
+        var close_b = 0;
+        var ci = 0;
+        while (ci < len(line)) {
+            var ch = charAt(line, ci);
+            if (ch == 123) { open_b = open_b + 1; }
+            if (ch == 125) { close_b = close_b + 1; }
+            ci = ci + 1;
+        }
+        while (open_b > close_b) {
+            print "...> ";
+            var more = readLine();
+            if (len(more) == 0) { break; }
+            line = line + more;
+            var mi = 0;
+            while (mi < len(more)) {
+                var ch = charAt(more, mi);
+                if (ch == 123) { open_b = open_b + 1; }
+                if (ch == 125) { close_b = close_b + 1; }
+                mi = mi + 1;
+            }
+        }
+        // Classify: leading keyword => declaration
+        var ti = 0;
+        while (ti < len(line) && (charAt(line, ti) == 32 || charAt(line, ti) == 9)) { ti = ti + 1; }
+        var trimmed = substr(line, ti, len(line) - ti);
+        var is_decl = 0;
+        if (len(trimmed) >= 5 && strcmp(substr(trimmed, 0, 5), "func ") == 0) { is_decl = 1; }
+        else if (len(trimmed) >= 4 && strcmp(substr(trimmed, 0, 4), "var ") == 0) { is_decl = 1; }
+        else if (len(trimmed) >= 8 && strcmp(substr(trimmed, 0, 8), "require ") == 0) { is_decl = 1; }
+        if (is_decl) {
+            env = env + line + "\n";
+            println "(defined)";
+        } else {
+            var ends_semi = 0;
+            var ends_brace = 0;
+            if (len(line) > 0 && charAt(line, len(line) - 1) == 59) { ends_semi = 1; }
+            if (len(line) > 0 && charAt(line, len(line) - 1) == 125) { ends_brace = 1; }
+            var src = env + "func main() {";
+            if (ends_semi == 0 && ends_brace == 0) {
+                src = src + " println (" + line + ");";
+            } else {
+                src = src + line;
+            }
+            src = src + " return 0; }";
+            var state = compiler.make_state(src);
+            state[28] = ".";
+            compiler.lex_source(state);
+            compiler.parse_program(state);
+            compiler.compile_program(state);
+            var bc = compiler.output_bytecode(state);
+            g_prog_argc = 0;
+            g_prog_argv_offset = 0;
+            vm.run_bytecode(bc);
+        }
+    }
+    return 0;
+}
 func main() {
     var n = argc();
     if (n < 2) {
@@ -191,6 +392,12 @@ func main() {
     var cmd = argv(1);
     if (strcmp(cmd, "run") == 0) {
         return cmd_run(n);
+    } else if (strcmp(cmd, "bytecode") == 0) {
+        return cmd_bytecode(n);
+    } else if (strcmp(cmd, "self-test") == 0) {
+        return cmd_self_test();
+    } else if (strcmp(cmd, "repl") == 0) {
+        return cmd_repl();
     } else if (strcmp(cmd, "dump-text") == 0) {
         return cmd_dump_text(n);
     } else if (strcmp(cmd, "llvm") == 0) {

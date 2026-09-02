@@ -392,6 +392,7 @@ static void self_test(void) {
         dump_bytecode_text(prog);
         program_free(prog);
         free(src);
+        fflush(NULL);
         _exit(0);
     }
     int status;

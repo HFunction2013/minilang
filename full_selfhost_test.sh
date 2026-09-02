@@ -124,6 +124,69 @@ if python3 -c "import llvmlite" 2>/dev/null; then
 else
     echo "  SKIP: llvmlite not installed"
 fi
+
+echo "=== 10. New commands: bytecode / self-test / repl (must match boot) ==="
+echo "  bytecode: human-readable disassembly"
+for f in tests/hello.mil tests/fib.mil tests/array_test.mil tests/nested_test.mil tests/require_test.mil tests/require_path.mil; do
+    base=$(basename "$f" .mil)
+    ./minilang bytecode "$f" > /tmp/sh_bc_boot_$base.txt 2>/dev/null
+    ./minilang run main.mil bytecode "$f" > /tmp/sh_bc_mil_$base.txt 2>/dev/null
+    check "$(diff -q /tmp/sh_bc_boot_$base.txt /tmp/sh_bc_mil_$base.txt >/dev/null && echo OK)" "OK" "bytecode command matches boot for $base"
+done
+echo "  self-test"
+./minilang run main.mil self-test 2>/dev/null | grep -v "Self-hosting test" | grep -v "self-test:" > /tmp/sh_st_mil.txt
+./minilang self-test 2>/dev/null | grep -v "Self-hosting test" | grep -v "boot compile done" > /tmp/sh_st_boot.txt
+check "$(diff -q /tmp/sh_st_boot.txt /tmp/sh_st_mil.txt >/dev/null && echo OK)" "OK" "self-test dumps compiler.mil bytecode identically"
+echo "  repl (piped input)"
+printf 'println 42;\nfunc add(a, b) { return a + b; }\nprintln add(2, 3);\nquit\n' | ./minilang repl > /tmp/sh_repl_boot.txt 2>/dev/null
+printf 'println 42;\nfunc add(a, b) { return a + b; }\nprintln add(2, 3);\nquit\n' | ./minilang run main.mil repl > /tmp/sh_repl_mil.txt 2>/dev/null
+check "$(diff -q /tmp/sh_repl_boot.txt /tmp/sh_repl_mil.txt >/dev/null && echo OK)" "OK" "repl output matches boot"
+echo "=== 11. A/B two-compiler self-hosting acceptance ==="
+echo "  A = boot-compiled compiler.mil; B = A-compiled compiler.mil"
+echo "  Step 1: boot compiles compiler.mil -> A"
+rm -f compiler
+./minilang build compiler.mil > /dev/null 2>&1
+if [ -f compiler ]; then
+    mv compiler /tmp/sh_compiler_A
+    check "OK" "OK" "boot builds A compiler"
+else
+    check "FAIL" "OK" "boot builds A compiler"
+fi
+echo "  Step 2: A compiles + runs all test programs"
+for f in tests/hello.mil tests/fib.mil tests/array_test.mil tests/nested_test.mil tests/require_test.mil tests/require_path.mil; do
+    base=$(basename "$f" .mil)
+    /tmp/sh_compiler_A dump-text "$f" > /tmp/sh_A_$base.bc 2>/dev/null
+    ./minilang run "$f" > /tmp/sh_ref_$base.out 2>/dev/null
+    ./minilang run vm.mil /tmp/sh_A_$base.bc > /tmp/sh_A_$base.out 2>/dev/null
+    check "$(diff -q /tmp/sh_ref_$base.out /tmp/sh_A_$base.out >/dev/null && echo OK)" "OK" "A runs $base"
+done
+echo "  Step 3: A compiles itself (B bytecode); compare A bytecode with boot"
+/tmp/sh_compiler_A dump-text compiler.mil > /tmp/sh_B_bc.txt 2>/dev/null
+./minilang dump-text compiler.mil > /tmp/sh_boot_bc.txt 2>/dev/null
+check "$(diff -q /tmp/sh_B_bc.txt /tmp/sh_boot_bc.txt >/dev/null && echo OK)" "OK" "A/B bytecode identical (boot == A-compiled)"
+echo "  Step 4: A/B binary identical (same LLVM IR -> same native binary)"
+./minilang llvm compiler.mil 2>/dev/null
+mv compiler.ll /tmp/sh_A_compiler.ll
+./minilang run main.mil llvm compiler.mil > /tmp/sh_B_compiler.ll 2>/dev/null
+check "$(diff -q /tmp/sh_A_compiler.ll /tmp/sh_B_compiler.ll >/dev/null && echo OK)" "OK" "A/B LLVM IR identical"
+if python3 -c "import llvmlite" 2>/dev/null; then
+    python3 ir_compile.py /tmp/sh_A_compiler.ll /tmp/sh_A_compiler.o > /dev/null 2>&1
+    python3 ir_compile.py /tmp/sh_B_compiler.ll /tmp/sh_B_compiler.o > /dev/null 2>&1
+    gcc -o /tmp/sh_compiler_A_bin /tmp/sh_A_compiler.o runtime.c -O2 2>/dev/null
+    gcc -o /tmp/sh_compiler_B_bin /tmp/sh_B_compiler.o runtime.c -O2 2>/dev/null
+    ha=$(sha256sum /tmp/sh_compiler_A_bin | cut -d' ' -f1)
+    hb=$(sha256sum /tmp/sh_compiler_B_bin | cut -d' ' -f1)
+    check "$ha" "$hb" "A/B binary sha256 identical ($ha)"
+fi
+echo "  Step 5: B (A-compiled bytecode) runs all test programs"
+for f in tests/hello.mil tests/fib.mil tests/array_test.mil tests/nested_test.mil tests/require_test.mil tests/require_path.mil; do
+    base=$(basename "$f" .mil)
+    /tmp/sh_compiler_A dump-text "$f" > /tmp/sh_B_$base.bc 2>/dev/null
+    ./minilang run vm.mil /tmp/sh_B_$base.bc > /tmp/sh_B_$base.out 2>/dev/null
+    check "$(diff -q /tmp/sh_ref_$base.out /tmp/sh_B_$base.out >/dev/null && echo OK)" "OK" "B runs $base"
+done
+rm -f /tmp/sh_compiler_A compiler.ll compiler.o compiler /tmp/sh_A_*.ll /tmp/sh_B_*.ll /tmp/sh_A_*.o /tmp/sh_B_*.o
+
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ $FAIL -eq 0 ]; then

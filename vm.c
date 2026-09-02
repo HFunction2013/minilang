@@ -250,6 +250,17 @@ Value vm_run(VM *vm) {
                 push(vm, make_int(rc));
                 break;
             }
+            case OP_READLINE: {
+                char buf[8192];
+                if (fgets(buf, sizeof(buf), stdin) == NULL) {
+                    push(vm, make_string(""));
+                } else {
+                    size_t n = strlen(buf);
+                    while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) buf[--n] = '\0';
+                    push(vm, make_string(buf));
+                }
+                break;
+            }
             case OP_PRINT: {
                 Value v = pop(vm);
                 value_print(v, 0);
