@@ -2,7 +2,10 @@
 *.o
 *.milc
 /minilang
-/test/hello
-/test/array_test
-/test/fib
+/tests/array_test
+/tests/nested_test
+/tests/require_path
+/tests/fib
+/tests/hello
+/tests/require_test
 .DS_Store
