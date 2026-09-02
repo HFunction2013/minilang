@@ -4,6 +4,14 @@
 #include <string.h>
 #include <stdint.h>
 
+static int g_argc = 0;
+static char **g_argv = NULL;
+
+void ml_set_args(int argc, char **argv) {
+    g_argc = argc;
+    g_argv = argv;
+}
+
 typedef struct {
     int64_t tag;     /* 0=nil, 1=int, 2=string, 3=array */
     int64_t payload; /* int value, or pointer cast to i64 */
@@ -136,6 +144,51 @@ Value ml_array_create(int64_t count, Value *items) {
     a->data = malloc(sizeof(Value) * (count > 0 ? count : 1));
     for (int64_t i = 0; i < count; i++) a->data[i] = items[i];
     Value v = {TAG_ARR, (int64_t)(intptr_t)a};
+    return v;
+}
+
+/* array(size, init): create array of given size filled with init */
+Value ml_array_make(Value sizev, Value init) {
+    int64_t size = sizev.payload;
+    if (size < 0) size = 0;
+    Array *a = malloc(sizeof(Array));
+    a->len = size;
+    a->data = malloc(sizeof(Value) * (size > 0 ? size : 1));
+    for (int64_t i = 0; i < size; i++) a->data[i] = init;
+    Value v = {TAG_ARR, (int64_t)(intptr_t)a};
+    return v;
+}
+
+Value ml_argc(void) {
+    Value v = {TAG_INT, g_argc};
+    return v;
+}
+
+Value ml_argv(Value idxv) {
+    int idx = (int)idxv.payload;
+    if (idx < 0 || idx >= g_argc) {
+        Value v = {TAG_STR, (int64_t)(intptr_t)strdup("")};
+        return v;
+    }
+    Value v = {TAG_STR, (int64_t)(intptr_t)strdup(g_argv[idx])};
+    return v;
+}
+
+Value ml_readfile(Value pathv) {
+    const char *path = (const char*)(intptr_t)pathv.payload;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "Cannot open file: %s\n", path);
+        exit(1);
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = malloc(size + 1);
+    fread(buf, 1, size, f);
+    buf[size] = '\0';
+    fclose(f);
+    Value v = {TAG_STR, (int64_t)(intptr_t)buf};
     return v;
 }
 

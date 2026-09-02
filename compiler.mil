@@ -104,6 +104,9 @@ var OP_LOAD_GLOBAL = 37;
 var OP_STORE_GLOBAL = 38;
 var OP_READALL = 39;
 var OP_MAKE_ARRAY = 40;
+var OP_ARGC = 41;
+var OP_ARGV = 42;
+var OP_READFILE = 43;
 
 // ===== State (passed as array) =====
 // State indices:
@@ -114,15 +117,15 @@ var OP_MAKE_ARRAY = 40;
 // 19=break_positions, 20=break_count, 21=loop_stack, 22=loop_depth
 
 func make_state(src) {
-    var tokens = make_arr(8192);
-    var constants = make_arr(2048);
-    var funcs = make_arr(256);
-    var bytecode = make_arr(65536);
-    var var_names = make_arr(256);
-    var global_names = make_arr(256);
-    var global_inits = make_arr(256);
-    var break_positions = make_arr(1024);
-    var loop_stack = make_arr(64);
+    var tokens = make_arr(32768);
+    var constants = make_arr(8192);
+    var funcs = make_arr(1024);
+    var bytecode = make_arr(262144);
+    var var_names = make_arr(1024);
+    var global_names = make_arr(1024);
+    var global_inits = make_arr(1024);
+    var break_positions = make_arr(4096);
+    var loop_stack = make_arr(256);
     var state = [src, 0, 1, tokens, 0, 0, constants, 0, funcs, 0, bytecode, 0, var_names, 0, 0, global_names, 0, global_inits, 0, break_positions, 0, loop_stack, 0];
     return state;
 }
@@ -978,6 +981,14 @@ func compile_expr(state, node) {
             compile_expr(state, node[3][0]);
             compile_expr(state, node[3][1]);
             emit(state, OP_MAKE_ARRAY, 0, 0);
+        } else if (strcmp(name, "argc") == 0) {
+            emit(state, OP_ARGC, 0, 0);
+        } else if (strcmp(name, "argv") == 0) {
+            compile_expr(state, node[3][0]);
+            emit(state, OP_ARGV, 0, 0);
+        } else if (strcmp(name, "readFile") == 0) {
+            compile_expr(state, node[3][0]);
+            emit(state, OP_READFILE, 0, 0);
         } else {
             var fi = find_func(state, name);
             var i = 0;
@@ -1111,11 +1122,24 @@ func output_bytecode(state) {
 // by the build system (see embed_source.py or the Makefile)
 
 func main() {
-    var src = readAll();
+    var n = argc();
+    if (n < 3) {
+        println "Usage: compiler <command> <file>";
+        println "Commands: dump-text";
+        return 1;
+    }
+    var cmd = argv(1);
+    var file = argv(2);
+    var src = readFile(file);
     var state = make_state(src);
     lex_source(state);
     var prog = parse_program(state);
     compile_program(state, prog);
-    output_bytecode(state);
+    if (strcmp(cmd, "dump-text") == 0) {
+        output_bytecode(state);
+    } else {
+        println "Unknown command";
+        return 1;
+    }
     return 0;
 }

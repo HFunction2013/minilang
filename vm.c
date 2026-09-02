@@ -17,6 +17,11 @@ void vm_free(VM *vm) {
     free(vm);
 }
 
+void vm_set_args(VM *vm, int argc, char **argv) {
+    vm->argc = argc;
+    vm->argv = argv;
+}
+
 static inline void push(VM *vm, Value v) {
     if (vm->sp >= VM_STACK_SIZE) {
         fprintf(stderr, "VM error: stack overflow (sp=%d, call_depth=%d, ip=%d)\n", vm->sp, vm->call_depth, vm->ip);
@@ -180,6 +185,39 @@ Value vm_run(VM *vm) {
                 for (int i = 0; i < size; i++) items[i] = init;
                 push(vm, make_array(items, size));
                 free(items);
+                break;
+            }
+            case OP_ARGC: {
+                push(vm, make_int(vm->argc));
+                break;
+            }
+            case OP_ARGV: {
+                Value idxv = pop(vm);
+                int idx = (int)idxv.as.integer;
+                if (idx < 0 || idx >= vm->argc) {
+                    push(vm, make_string(""));
+                } else {
+                    push(vm, make_string(vm->argv[idx]));
+                }
+                break;
+            }
+            case OP_READFILE: {
+                Value pathv = pop(vm);
+                const char *path = pathv.as.string;
+                FILE *f = fopen(path, "rb");
+                if (!f) {
+                    fprintf(stderr, "Cannot open file: %s\n", path);
+                    exit(1);
+                }
+                fseek(f, 0, SEEK_END);
+                long size = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                char *buf = malloc(size + 1);
+                fread(buf, 1, size, f);
+                buf[size] = '\0';
+                fclose(f);
+                push(vm, make_string(buf));
+                free(buf);
                 break;
             }
             case OP_PRINT: {

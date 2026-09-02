@@ -183,11 +183,12 @@ static int compile_and_run_src(const char *src) {
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
 /* Run a .mil file (compile) or .milc file (load). */
-static int run_file(const char *file) {
+static int run_file(const char *file, int prog_argc, char **prog_argv) {
     if (is_milc_file(file)) {
         Program *prog = program_read_milc(file);
         if (!prog) { fprintf(stderr, "Failed to load bytecode: %s\n", file); return 1; }
         VM *vm = vm_new(prog);
+        vm_set_args(vm, prog_argc, prog_argv);
         (void)vm_run(vm);
         vm_free(vm);
         program_free(prog);
@@ -198,6 +199,7 @@ static int run_file(const char *file) {
     set_dirs_from_file(file);
     Program *prog = compile_source(src);
     VM *vm = vm_new(prog);
+    vm_set_args(vm, prog_argc, prog_argv);
     (void)vm_run(vm);
     vm_free(vm);
     program_free(prog);
@@ -395,7 +397,7 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "self-test") == 0) { self_test(); return 0; }
     if (strcmp(cmd, "run") == 0) {
         if (argc < 3) usage(argv[0]);
-        return run_file(argv[2]);
+        return run_file(argv[2], argc - 2, argv + 2);
     }
     if (strcmp(cmd, "bytecode") == 0 || strcmp(cmd, "dump-text") == 0) {
         if (argc < 3) usage(argv[0]);

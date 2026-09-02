@@ -346,6 +346,20 @@ static void compile_expr(Compiler *c, Node *n) {
                 bc_emit(c->prog, OP_MAKE_ARRAY, 0, 0);
                 break;
             }
+            if (strcmp(n->call.name, "argc") == 0) {
+                bc_emit(c->prog, OP_ARGC, 0, 0);
+                break;
+            }
+            if (strcmp(n->call.name, "argv") == 0) {
+                compile_expr(c, n->call.args[0]);
+                bc_emit(c->prog, OP_ARGV, 0, 0);
+                break;
+            }
+            if (strcmp(n->call.name, "readFile") == 0) {
+                compile_expr(c, n->call.args[0]);
+                bc_emit(c->prog, OP_READFILE, 0, 0);
+                break;
+            }
             // User-defined function
             // Resolve alias: if n->call.name is an alias, use target name
             const char *cname = n->call.name;

@@ -27,6 +27,15 @@ typedef struct {
     char *globals;
     int globals_len;
     int globals_cap;
+    // Top-level global variables (module-level)
+    char **global_names;
+    char **global_ptrs;  // e.g. "@global_TOK_VAR"
+    int global_count;
+    int global_cap;
+    // Break target stack (innermost loop exit block)
+    char **break_targets;
+    int break_count;
+    int break_cap;
 } IRGen;
 
 static void ir_buf_init(IRGen *g) {
@@ -41,6 +50,9 @@ static void ir_buf_init(IRGen *g) {
     g->globals = malloc(4096);
     g->globals[0] = '\0';
     g->globals_len = 0; g->globals_cap = 4096;
+    g->global_names = NULL; g->global_ptrs = NULL;
+    g->global_count = 0; g->global_cap = 0;
+    g->break_targets = NULL; g->break_count = 0; g->break_cap = 0;
 }
 
 static void ir_emit_global(IRGen *g, const char *fmt, ...) {
@@ -106,6 +118,26 @@ static int find_var_ir(IRGen *g, const char *name) {
     return -1;
 }
 
+static int find_global_ir(IRGen *g, const char *name) {
+    for (int i = 0; i < g->global_count; i++)
+        if (strcmp(g->global_names[i], name) == 0) return i;
+    return -1;
+}
+
+static void push_break_target(IRGen *g, const char *label) {
+    if (g->break_count >= g->break_cap) {
+        g->break_cap = g->break_cap ? g->break_cap * 2 : 8;
+        g->break_targets = realloc(g->break_targets, sizeof(char*) * g->break_cap);
+    }
+    g->break_targets[g->break_count++] = strdup(label);
+}
+
+static void pop_break_target(IRGen *g) {
+    if (g->break_count > 0) {
+        free(g->break_targets[--g->break_count]);
+    }
+}
+
 static int add_var_ir(IRGen *g, const char *name) {
     int existing = find_var_ir(g, name);
     if (existing >= 0) return existing;
@@ -135,11 +167,20 @@ static void compile_stmt_ir(IRGen *g, Node *n) {
         }
         case NODE_ASSIGN: {
             int idx = find_var_ir(g, n->assign.name);
-            if (idx < 0) { fprintf(stderr, "IR error: undefined var '%s'\n", n->assign.name); exit(1); }
-            char *val = compile_expr_ir(g, n->assign.value);
-            ir_emit(g, "  store %%Value %s, %%Value* %s, align 8\n", val, g->var_regs[idx]);
-            free(val);
-            break;
+            if (idx >= 0) {
+                char *val = compile_expr_ir(g, n->assign.value);
+                ir_emit(g, "  store %%Value %s, %%Value* %s, align 8\n", val, g->var_regs[idx]);
+                free(val);
+                break;
+            }
+            int gidx = find_global_ir(g, n->assign.name);
+            if (gidx >= 0) {
+                char *val = compile_expr_ir(g, n->assign.value);
+                ir_emit(g, "  store %%Value %s, %%Value* %s, align 8\n", val, g->global_ptrs[gidx]);
+                free(val);
+                break;
+            }
+            fprintf(stderr, "IR error: undefined var '%s'\n", n->assign.name); exit(1);
         }
         case NODE_INDEX_ASSIGN: {
             char *arr = compile_expr_ir(g, n->index_assign.target);
@@ -185,6 +226,7 @@ static void compile_stmt_ir(IRGen *g, Node *n) {
             char *cond_b = new_block(g);
             char *body_b = new_block(g);
             char *end_b = new_block(g);
+            push_break_target(g, end_b);
             ir_emit(g, "  br label %%%s\n", cond_b);
             ir_emit(g, "%s:\n", cond_b);
             char *cond = compile_expr_ir(g, n->while_stmt.cond);
@@ -197,6 +239,7 @@ static void compile_stmt_ir(IRGen *g, Node *n) {
             compile_stmt_ir(g, n->while_stmt.body);
             ir_emit(g, "  br label %%%s\n", cond_b);
             ir_emit(g, "%s:\n", end_b);
+            pop_break_target(g);
             free(cond); free(condval); free(condbool);
             free(cond_b); free(body_b); free(end_b);
             break;
@@ -209,6 +252,11 @@ static void compile_stmt_ir(IRGen *g, Node *n) {
             } else {
                 ir_emit(g, "  ret %%Value { i64 0, i64 0 }\n");
             }
+            break;
+        }
+        case NODE_BREAK: {
+            if (g->break_count <= 0) { fprintf(stderr, "IR error: break outside loop\n"); exit(1); }
+            ir_emit(g, "  br label %%%s\n", g->break_targets[g->break_count - 1]);
             break;
         }
         case NODE_PRINT: {
@@ -251,9 +299,10 @@ static char *compile_expr_ir(IRGen *g, Node *n) {
             int ei = 0;
             for (int i = 0; n->string.value[i]; i++) {
                 unsigned char c = n->string.value[i];
-                if (c == '"' || c == '\\') {
-                    escaped[ei++] = '\\';
-                    escaped[ei++] = (c == '"') ? '"' : '\\';
+                if (c == '"') {
+                    escaped[ei++] = '\\'; escaped[ei++] = '2'; escaped[ei++] = '2';
+                } else if (c == '\\') {
+                    escaped[ei++] = '\\'; escaped[ei++] = '5'; escaped[ei++] = 'C';
                 } else if (c == '\n') {
                     escaped[ei++] = '\\'; escaped[ei++] = '0'; escaped[ei++] = 'A';
                 } else if (c == '\t') {
@@ -309,10 +358,18 @@ static char *compile_expr_ir(IRGen *g, Node *n) {
         }
         case NODE_VAR: {
             int idx = find_var_ir(g, n->var.name);
-            if (idx < 0) { fprintf(stderr, "IR error: undefined var '%s'\n", n->var.name); exit(1); }
-            char *r = new_temp(g);
-            ir_emit(g, "  %s = load %%Value, %%Value* %s, align 8\n", r, g->var_regs[idx]);
-            return r;
+            if (idx >= 0) {
+                char *r = new_temp(g);
+                ir_emit(g, "  %s = load %%Value, %%Value* %s, align 8\n", r, g->var_regs[idx]);
+                return r;
+            }
+            int gidx = find_global_ir(g, n->var.name);
+            if (gidx >= 0) {
+                char *r = new_temp(g);
+                ir_emit(g, "  %s = load %%Value, %%Value* %s, align 8\n", r, g->global_ptrs[gidx]);
+                return r;
+            }
+            fprintf(stderr, "IR error: undefined var '%s'\n", n->var.name); exit(1);
         }
         case NODE_BINARY: {
             char *left = compile_expr_ir(g, n->binary.left);
@@ -396,6 +453,30 @@ static char *compile_expr_ir(IRGen *g, Node *n) {
                 ir_emit(g, "  %s = call %%Value @ml_readall()\n", r);
                 return r;
             }
+            if (strcmp(n->call.name, "array") == 0) {
+                char *a = compile_expr_ir(g, n->call.args[0]);
+                char *b = compile_expr_ir(g, n->call.args[1]);
+                char *r = new_temp(g);
+                ir_emit(g, "  %s = call %%Value @ml_array_make(%%Value %s, %%Value %s)\n", r, a, b);
+                free(a); free(b); return r;
+            }
+            if (strcmp(n->call.name, "argc") == 0) {
+                char *r = new_temp(g);
+                ir_emit(g, "  %s = call %%Value @ml_argc()\n", r);
+                return r;
+            }
+            if (strcmp(n->call.name, "argv") == 0) {
+                char *a = compile_expr_ir(g, n->call.args[0]);
+                char *r = new_temp(g);
+                ir_emit(g, "  %s = call %%Value @ml_argv(%%Value %s)\n", r, a);
+                free(a); return r;
+            }
+            if (strcmp(n->call.name, "readFile") == 0) {
+                char *a = compile_expr_ir(g, n->call.args[0]);
+                char *r = new_temp(g);
+                ir_emit(g, "  %s = call %%Value @ml_readfile(%%Value %s)\n", r, a);
+                free(a); return r;
+            }
             // User function call
             // Resolve alias
             const char *cname = n->call.name;
@@ -474,6 +555,11 @@ char *generate_llvm_ir(Parser *p) {
     ir_emit(&g, "declare %%Value @ml_or(%%Value, %%Value)\n");
     ir_emit(&g, "declare %%Value @ml_not(%%Value)\n");
     ir_emit(&g, "declare %%Value @ml_array_create(i64, %%Value*)\n");
+    ir_emit(&g, "declare %%Value @ml_array_make(%%Value, %%Value)\n");
+    ir_emit(&g, "declare %%Value @ml_argc()\n");
+    ir_emit(&g, "declare %%Value @ml_argv(%%Value)\n");
+    ir_emit(&g, "declare %%Value @ml_readfile(%%Value)\n");
+    ir_emit(&g, "declare void @ml_set_args(i32, i8**)\n");
     ir_emit(&g, "declare %%Value @ml_array_get(%%Value, i64)\n");
     ir_emit(&g, "declare void @ml_array_set(%%Value, i64, %%Value)\n");
     ir_emit(&g, "declare %%Value @ml_len(%%Value)\n");
@@ -488,6 +574,22 @@ char *generate_llvm_ir(Parser *p) {
     // Since compile_expr_ir uses a static globals buffer, we need to reset it.
     // Actually, let's just emit functions and then prepend globals.
     // The static buffer in compile_expr_ir will accumulate strings.
+
+    // Register top-level global variables and emit their definitions
+    for (int gi = 0; gi < p->global_count; gi++) {
+        Node *gvar = p->globals[gi];
+        if (g.global_count >= g.global_cap) {
+            g.global_cap = g.global_cap ? g.global_cap * 2 : 16;
+            g.global_names = realloc(g.global_names, sizeof(char*) * g.global_cap);
+            g.global_ptrs = realloc(g.global_ptrs, sizeof(char*) * g.global_cap);
+        }
+        g.global_names[g.global_count] = strdup(gvar->var_decl.name);
+        char ptrname[256];
+        snprintf(ptrname, sizeof(ptrname), "@global_%s", gvar->var_decl.name);
+        g.global_ptrs[g.global_count] = strdup(ptrname);
+        ir_emit_global(&g, "%s = global %%Value zeroinitializer, align 8\n", ptrname);
+        g.global_count++;
+    }
 
     // Generate each user function
     for (int fi = 0; fi < p->func_count; fi++) {
@@ -563,6 +665,16 @@ char *generate_llvm_ir(Parser *p) {
         //
         // I'll save the current buffer position, compile body, then rearrange.
 
+        // If this is main, initialize top-level globals first
+        if (strcmp(f->func.name, "main") == 0) {
+            for (int gi = 0; gi < p->global_count; gi++) {
+                Node *gvar = p->globals[gi];
+                int gidx = find_global_ir(&g, gvar->var_decl.name);
+                char *val = compile_expr_ir(&g, gvar->var_decl.value);
+                ir_emit(&g, "  store %%Value %s, %%Value* %s, align 8\n", val, g.global_ptrs[gidx]);
+                free(val);
+            }
+        }
         compile_stmt_ir(&g, f->func.body);
 
         // Ensure function ends with ret
@@ -575,6 +687,12 @@ char *generate_llvm_ir(Parser *p) {
         // We need: ... "entry:\n" [allocas] [body] [ret]
         if (g.allocas_len > 0) {
             int body_len = g.len - entry_pos;
+            // Ensure buffer has room for allocas + body + null terminator
+            int needed = g.len + g.allocas_len + 1;
+            if (needed > g.cap) {
+                while (needed > g.cap) g.cap *= 2;
+                g.buf = realloc(g.buf, g.cap);
+            }
             char *body_copy = malloc(body_len);
             memcpy(body_copy, g.buf + entry_pos, body_len);
             // Insert allocas
@@ -598,8 +716,9 @@ char *generate_llvm_ir(Parser *p) {
     }
 
     // Main function
-    ir_emit(&g, "define i32 @main() {\n");
+    ir_emit(&g, "define i32 @main(i32 %%argc, i8** %%argv) {\n");
     ir_emit(&g, "entry:\n");
+    ir_emit(&g, "  call void @ml_set_args(i32 %%argc, i8** %%argv)\n");
     ir_emit(&g, "  %%result = call %%Value @user_main()\n");
     ir_emit(&g, "  %%exitcode = extractvalue %%Value %%result, 1\n");
     ir_emit(&g, "  ret i32 0\n");
@@ -622,6 +741,14 @@ char *generate_llvm_ir(Parser *p) {
         free(tail);
     }
 
+    for (int i = 0; i < g.global_count; i++) {
+        free(g.global_names[i]);
+        free(g.global_ptrs[i]);
+    }
+    free(g.global_names);
+    free(g.global_ptrs);
+    for (int i = 0; i < g.break_count; i++) free(g.break_targets[i]);
+    free(g.break_targets);
     free(g.globals);
     free(g.allocas);
     return g.buf;

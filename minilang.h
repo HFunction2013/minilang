@@ -219,6 +219,9 @@ typedef enum {
     OP_STORE_GLOBAL,  // op1: global index
     OP_READALL,       // read all stdin, push as string
     OP_MAKE_ARRAY,    // pop init, pop size, create array of size with init
+    OP_ARGC,          // push command-line argument count
+    OP_ARGV,          // pop index, push argv[index] as string
+    OP_READFILE,      // pop path, push file contents as string
 } OpCode;
 
 typedef struct {
@@ -280,10 +283,13 @@ typedef struct {
     CallFrame calls[VM_CALL_STACK];
     int call_depth;
     int ip;
+    int argc;         // command-line argument count
+    char **argv;      // command-line arguments (argv[0] = program name)
 } VM;
 
 VM *vm_new(Program *prog);
 void vm_free(VM *vm);
+void vm_set_args(VM *vm, int argc, char **argv);
 Value vm_run(VM *vm);
 
 /* ===================== LLVM IR Gen ===================== */

@@ -1,44 +1,54 @@
 #!/bin/bash
 # Self-hosting verification script for minilang
-# Boot compiler (C) compiles compiler.mil -> bytecode text A
-# Self-hosted compiler (compiler.mil running on VM) compiles compiler.mil -> bytecode text B
-# A and B must be byte-for-byte identical
+# Stage 0: boot compiler (C) - ./minilang
+# Stage 1: boot compiles compiler.mil -> native executable A (via LLVM)
+# Stage 2: A compiles compiler.mil -> bytecode text B
+# Stage 3: boot compiles compiler.mil -> bytecode text A'
+# Stage 4: compare A' and B (must be identical)
 set -e
 cd "$(dirname "$0")"
+
 echo "=== Building boot compiler (C) ==="
 make 2>&1 | grep -E "error|Error" || true
 echo ""
-echo "=== Step 1: Boot compiler compiles compiler.mil ==="
-./minilang dump-text compiler.mil > /tmp/minilang_boot_bc.txt 2>/tmp/minilang_boot_err.txt
-echo "Exit code: $?"
-if [ -s /tmp/minilang_boot_err.txt ]; then
-    echo "Errors:"
-    cat /tmp/minilang_boot_err.txt
+
+echo "=== Stage 1: boot compiles compiler.mil -> native executable A ==="
+./minilang build -e compiler.mil 2>&1 | tail -1
+if [ ! -x ./compiler ]; then
+    echo "ERROR: failed to build compiler executable"
     exit 1
 fi
-echo "Output: $(wc -l < /tmp/minilang_boot_bc.txt) lines"
+echo "A = ./compiler ($(wc -c < compiler) bytes)"
 echo ""
-echo "=== Step 2: Self-hosted compiler compiles compiler.mil ==="
-echo "(compiler.mil runs on VM, reads its own source from stdin)"
-cat compiler.mil | ./minilang run compiler.mil > /tmp/minilang_self_bc.txt 2>/tmp/minilang_self_err.txt
+
+echo "=== Stage 2: A compiles compiler.mil -> bytecode text B ==="
+./compiler dump-text compiler.mil > /tmp/minilang_stage2_b.txt 2>/tmp/minilang_stage2_err.txt
 echo "Exit code: $?"
-if [ -s /tmp/minilang_self_err.txt ]; then
+if [ -s /tmp/minilang_stage2_err.txt ]; then
     echo "Errors:"
-    cat /tmp/minilang_self_err.txt
+    cat /tmp/minilang_stage2_err.txt
     exit 1
 fi
-echo "Output: $(wc -l < /tmp/minilang_self_bc.txt) lines"
+echo "B: $(wc -l < /tmp/minilang_stage2_b.txt) lines"
 echo ""
-echo "=== Step 3: Compare bytecode outputs ==="
-if diff -q /tmp/minilang_boot_bc.txt /tmp/minilang_self_bc.txt > /dev/null 2>&1; then
+
+echo "=== Stage 3: boot compiles compiler.mil -> bytecode text A' ==="
+./minilang dump-text compiler.mil > /tmp/minilang_stage3_a.txt 2>/dev/null
+echo "A': $(wc -l < /tmp/minilang_stage3_a.txt) lines"
+echo ""
+
+echo "=== Stage 4: compare A' and B ==="
+if diff -q /tmp/minilang_stage3_a.txt /tmp/minilang_stage2_b.txt > /dev/null 2>&1; then
     echo "SUCCESS: Boot and self-hosted bytecode are IDENTICAL!"
     echo ""
-    echo "Self-hosting verified: the minilang compiler can compile itself"
-    echo "and produce deterministic, reproducible bytecode."
+    echo "Self-hosting verified:"
+    echo "  boot (C) -> A (native exe) -> B (bytecode)"
+    echo "  boot (C) -> A' (bytecode)"
+    echo "  A' == B"
     exit 0
 else
     echo "FAILURE: Bytecode outputs differ!"
     echo "Diff (first 30 lines):"
-    diff /tmp/minilang_boot_bc.txt /tmp/minilang_self_bc.txt | head -30
+    diff /tmp/minilang_stage3_a.txt /tmp/minilang_stage2_b.txt | head -30
     exit 1
 fi
