@@ -487,9 +487,9 @@ static void rename_module_refs(Node *n, const char *prefix, int prefix_len) {
         case NODE_CALL: {
             // Rename internal function calls (not builtins, not already qualified)
             if (strchr(n->call.name, '.') == NULL) {
-                const char *builtins[] = {"len","charAt","substr","toString","toInt","strcmp","readAll","array","print","println"};
+                const char *builtins[] = {"len","charAt","substr","toString","toInt","strcmp","readAll","array","print","println","argc","argv","readFile","fileExists"};
                 int is_builtin = 0;
-                for (int i = 0; i < 10; i++) if (strcmp(n->call.name, builtins[i]) == 0) { is_builtin = 1; break; }
+                for (int i = 0; i < 14; i++) if (strcmp(n->call.name, builtins[i]) == 0) { is_builtin = 1; break; }
                 if (!is_builtin) {
                     char *newname = malloc(strlen(n->call.name) + prefix_len + 1);
                     snprintf(newname, strlen(n->call.name) + prefix_len + 1, "%s%s", prefix, n->call.name);

@@ -1,0 +1,654 @@
+// minilang VM implemented in minilang
+// Loads text bytecode format (MINILANGBC) and executes it.
+// Usage: ./minilang run vm.mil <bytecode_file> [args...]
+//   or:  ./minilang dump-text prog.mil | ./minilang run vm.mil
+// ===== Opcodes (must match C OpCode enum) =====
+var OP_CONST = 0;
+var OP_NIL = 1;
+var OP_ADD = 2;
+var OP_SUB = 3;
+var OP_MUL = 4;
+var OP_DIV = 5;
+var OP_MOD = 6;
+var OP_NEG = 7;
+var OP_EQ = 8;
+var OP_NEQ = 9;
+var OP_LT = 10;
+var OP_GT = 11;
+var OP_LTE = 12;
+var OP_GTE = 13;
+var OP_AND = 14;
+var OP_OR = 15;
+var OP_NOT = 16;
+var OP_LOAD = 17;
+var OP_STORE = 18;
+var OP_PRINT = 19;
+var OP_PRINTLN = 20;
+var OP_JMP = 21;
+var OP_JMPF = 22;
+var OP_CALL = 23;
+var OP_RET = 24;
+var OP_ARRAY = 25;
+var OP_INDEX = 26;
+var OP_INDEX_SET = 27;
+var OP_POP = 28;
+var OP_HALT = 29;
+var OP_CONCAT = 30;
+var OP_LEN = 31;
+var OP_CHARAT = 32;
+var OP_SUBSTR = 33;
+var OP_TOSTRING = 34;
+var OP_TOINT = 35;
+var OP_STRCMP = 36;
+var OP_LOAD_GLOBAL = 37;
+var OP_STORE_GLOBAL = 38;
+var OP_READALL = 39;
+var OP_MAKE_ARRAY = 40;
+var OP_ARGC = 41;
+var OP_ARGV = 42;
+var OP_READFILE = 43;
+var OP_FILEEXISTS = 44;
+// ===== Value types =====
+var VAL_NIL = 0;
+var VAL_INT = 1;
+var VAL_STRING = 2;
+var VAL_ARRAY = 3;
+// ===== VM state =====
+var g_constants = array(8192, 0);
+var g_const_count = 0;
+var g_func_names = array(1024, 0);
+var g_func_addrs = array(1024, 0);
+var g_func_params = array(1024, 0);
+var g_func_locals = array(1024, 0);
+var g_func_count = 0;
+var g_bc = array(262144, 0);
+var g_num_instr = 0;
+var g_stack = array(16384, 0);
+var g_sp = 0;
+var g_locals = array(256, 0);
+var g_globals = array(1024, 0);
+var g_global_count = 0;
+var g_call_ret = array(8192, 0);
+var g_call_old_locals = array(8192, 0);
+var g_call_depth = 0;
+var g_ip = 0;
+// Interpreted program args (offset from boot VM args)
+var g_prog_argc = 0;
+var g_prog_argv_offset = 1;
+// ===== Value helpers =====
+func v_nil() { return [VAL_NIL, 0]; }
+func v_int(x) { return [VAL_INT, x]; }
+func v_str(s) { return [VAL_STRING, s]; }
+func v_arr(a) { return [VAL_ARRAY, a]; }
+func char_to_str(c) {
+    if (c == 32) { return " "; }
+    if (c == 33) { return "!"; }
+    if (c == 34) { return "\""; }
+    if (c == 35) { return "#"; }
+    if (c == 36) { return "$"; }
+    if (c == 37) { return "%"; }
+    if (c == 38) { return "&"; }
+    if (c == 39) { return "'"; }
+    if (c == 40) { return "("; }
+    if (c == 41) { return ")"; }
+    if (c == 42) { return "*"; }
+    if (c == 43) { return "+"; }
+    if (c == 44) { return ","; }
+    if (c == 45) { return "-"; }
+    if (c == 46) { return "."; }
+    if (c == 47) { return "/"; }
+    if (c >= 48 && c <= 57) {
+        var digits = "0123456789";
+        return substr(digits, c - 48, 1);
+    }
+    if (c == 58) { return ":"; }
+    if (c == 59) { return ";"; }
+    if (c == 60) { return "<"; }
+    if (c == 61) { return "="; }
+    if (c == 62) { return ">"; }
+    if (c == 63) { return "?"; }
+    if (c == 64) { return "@"; }
+    if (c >= 65 && c <= 90) {
+        var upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        return substr(upper, c - 65, 1);
+    }
+    if (c == 91) { return "["; }
+    if (c == 92) { return "\\"; }
+    if (c == 93) { return "]"; }
+    if (c == 94) { return "^"; }
+    if (c == 95) { return "_"; }
+    if (c == 96) { return "`"; }
+    if (c >= 97 && c <= 122) {
+        var lower = "abcdefghijklmnopqrstuvwxyz";
+        return substr(lower, c - 97, 1);
+    }
+    if (c == 123) { return "{"; }
+    if (c == 124) { return "|"; }
+    if (c == 125) { return "}"; }
+    if (c == 126) { return "~"; }
+    if (c == 10) { return "\n"; }
+    if (c == 9) { return "\t"; }
+    return " ";
+}
+func unescape_string(s) {
+    var r = "";
+    var i = 0;
+    while (i < len(s)) {
+        var c = charAt(s, i);
+        if (c == 92 && i + 1 < len(s)) {
+            var next = charAt(s, i + 1);
+            if (next == 110) { r = r + "\n"; i = i + 2; }
+            else if (next == 116) { r = r + "\t"; i = i + 2; }
+            else if (next == 114) { r = r + "\r"; i = i + 2; }
+            else if (next == 92) { r = r + "\\"; i = i + 2; }
+            else { r = r + char_to_str(c); i = i + 1; }
+        } else {
+            r = r + char_to_str(c);
+            i = i + 1;
+        }
+    }
+    return r;
+}
+func val_truthy(v) {
+    if (v[0] == VAL_NIL) { return 0; }
+    if (v[0] == VAL_INT) { return v[1] != 0; }
+    if (v[0] == VAL_STRING) { return len(v[1]) > 0; }
+    if (v[0] == VAL_ARRAY) { return 1; }
+    return 0;
+}
+func val_print(v, newline) {
+    if (v[0] == VAL_NIL) { print "nil"; }
+    else if (v[0] == VAL_INT) { print toString(v[1]); }
+    else if (v[0] == VAL_STRING) { print v[1]; }
+    else if (v[0] == VAL_ARRAY) {
+        print "[";
+        var a = v[1];
+        var i = 0;
+        while (i < len(a)) {
+            if (i > 0) { print ", "; }
+            val_print(a[i], 0);
+            i = i + 1;
+        }
+        print "]";
+    }
+    if (newline == 1) { println ""; }
+}
+func val_add(a, b) {
+    if (a[0] == VAL_INT && b[0] == VAL_INT) { return v_int(a[1] + b[1]); }
+    if (a[0] == VAL_STRING || b[0] == VAL_STRING) {
+        var sa = "";
+        if (a[0] == VAL_STRING) { sa = a[1]; } else { sa = toString(a[1]); }
+        var sb = "";
+        if (b[0] == VAL_STRING) { sb = b[1]; } else { sb = toString(b[1]); }
+        return v_str(sa + sb);
+    }
+    println "VM error: type error in +";
+    return v_nil();
+}
+func val_sub(a, b) {
+    if (a[0] == VAL_INT && b[0] == VAL_INT) { return v_int(a[1] - b[1]); }
+    println "VM error: type error in -";
+    return v_nil();
+}
+func val_mul(a, b) {
+    if (a[0] == VAL_INT && b[0] == VAL_INT) { return v_int(a[1] * b[1]); }
+    println "VM error: type error in *";
+    return v_nil();
+}
+func val_div(a, b) {
+    if (a[0] == VAL_INT && b[0] == VAL_INT) {
+        if (b[1] == 0) { println "VM error: division by zero"; return v_nil(); }
+        return v_int(a[1] / b[1]);
+    }
+    println "VM error: type error in /";
+    return v_nil();
+}
+func val_mod(a, b) {
+    if (a[0] == VAL_INT && b[0] == VAL_INT) {
+        if (b[1] == 0) { println "VM error: modulo by zero"; return v_nil(); }
+        return v_int(a[1] % b[1]);
+    }
+    println "VM error: type error in %";
+    return v_nil();
+}
+func val_neg(a) {
+    if (a[0] == VAL_INT) { return v_int(-a[1]); }
+    println "VM error: type error in unary -";
+    return v_nil();
+}
+func cmp_values(a, b) {
+    if (a[0] == VAL_INT && b[0] == VAL_INT) {
+        if (a[1] < b[1]) { return -1; }
+        if (a[1] > b[1]) { return 1; }
+        return 0;
+    }
+    if (a[0] == VAL_STRING && b[0] == VAL_STRING) {
+        return strcmp(a[1], b[1]);
+    }
+    if (a[0] == VAL_NIL && b[0] == VAL_NIL) { return 0; }
+    return -2;
+}
+func val_eq(a, b) { return v_int(cmp_values(a, b) == 0); }
+func val_neq(a, b) { return v_int(cmp_values(a, b) != 0); }
+func val_lt(a, b) { return v_int(cmp_values(a, b) < 0); }
+func val_gt(a, b) { return v_int(cmp_values(a, b) > 0); }
+func val_lte(a, b) { return v_int(cmp_values(a, b) <= 0); }
+func val_gte(a, b) { return v_int(cmp_values(a, b) >= 0); }
+func val_and(a, b) { return v_int(val_truthy(a) && val_truthy(b)); }
+func val_or(a, b) { return v_int(val_truthy(a) || val_truthy(b)); }
+func val_not(a) { return v_int(val_truthy(a) == 0); }
+func val_len(v) {
+    if (v[0] == VAL_STRING) { return v_int(len(v[1])); }
+    if (v[0] == VAL_ARRAY) { return v_int(len(v[1])); }
+    println "VM error: len expects string or array";
+    return v_nil();
+}
+func val_charat(s, idx) {
+    if (s[0] != VAL_STRING || idx[0] != VAL_INT) {
+        println "VM error: charAt expects string and int";
+        return v_nil();
+    }
+    var i = idx[1];
+    if (i < 0 || i >= len(s[1])) { return v_int(0); }
+    return v_int(charAt(s[1], i));
+}
+func val_substr(s, start, lenv) {
+    if (s[0] != VAL_STRING || start[0] != VAL_INT || lenv[0] != VAL_INT) {
+        println "VM error: substr expects string, int, int";
+        return v_nil();
+    }
+    return v_str(substr(s[1], start[1], lenv[1]));
+}
+func val_tostring(v) {
+    if (v[0] == VAL_STRING) { return v_str(v[1]); }
+    if (v[0] == VAL_INT) { return v_str(toString(v[1])); }
+    if (v[0] == VAL_NIL) { return v_str("nil"); }
+    if (v[0] == VAL_ARRAY) { return v_str("<array>"); }
+    return v_str("");
+}
+func val_toint(v) {
+    if (v[0] == VAL_INT) { return v_int(v[1]); }
+    if (v[0] == VAL_STRING) { return v_int(toInt(v[1])); }
+    println "VM error: toInt expects int or string";
+    return v_nil();
+}
+func val_strcmp(a, b) {
+    if (a[0] == VAL_STRING && b[0] == VAL_STRING) {
+        return v_int(strcmp(a[1], b[1]));
+    }
+    println "VM error: strcmp expects two strings";
+    return v_nil();
+}
+// ===== Stack operations =====
+func push(v) {
+    g_stack[g_sp] = v;
+    g_sp = g_sp + 1;
+}
+func pop() {
+    g_sp = g_sp - 1;
+    return g_stack[g_sp];
+}
+// ===== Bytecode parser =====
+// Parse text bytecode from input string
+func load_bytecode(input) {
+    var pos = 0;
+    var inlen = len(input);
+    // Helper: read next line
+    // We'll parse inline for efficiency
+    // Skip "MINILANGBC\n"
+    // Find first newline
+    var line_end = 0;
+    while (pos < inlen && charAt(input, pos) != 10) { pos = pos + 1; }
+    pos = pos + 1; // skip newline
+    // Read const_count
+    var num_start = pos;
+    while (pos < inlen && charAt(input, pos) != 10) { pos = pos + 1; }
+    g_const_count = toInt(substr(input, num_start, pos - num_start));
+    pos = pos + 1;
+    // Read constants
+    var i = 0;
+    while (i < g_const_count) {
+        var ctype = charAt(input, pos) - 48; // '0' or '1'
+        pos = pos + 2; // skip type and space
+        var val_start = pos;
+        while (pos < inlen && charAt(input, pos) != 10) { pos = pos + 1; }
+        var raw = substr(input, val_start, pos - val_start);
+        pos = pos + 1;
+        if (ctype == 0) {
+            g_constants[i] = v_int(toInt(raw));
+        } else {
+            g_constants[i] = v_str(unescape_string(raw));
+        }
+        i = i + 1;
+    }
+    // Read func_count
+    num_start = pos;
+    while (pos < inlen && charAt(input, pos) != 10) { pos = pos + 1; }
+    g_func_count = toInt(substr(input, num_start, pos - num_start));
+    pos = pos + 1;
+    // Read functions
+    i = 0;
+    while (i < g_func_count) {
+        var line_start = pos;
+        while (pos < inlen && charAt(input, pos) != 10) { pos = pos + 1; }
+        var line = substr(input, line_start, pos - line_start);
+        pos = pos + 1;
+        // Parse: name addr params locals
+        var p = 0;
+        var llen = len(line);
+        // name (until space)
+        var ns = p;
+        while (p < llen && charAt(line, p) != 32) { p = p + 1; }
+        g_func_names[i] = substr(line, ns, p - ns);
+        p = p + 1;
+        // addr
+        var as = p;
+        while (p < llen && charAt(line, p) != 32) { p = p + 1; }
+        g_func_addrs[i] = toInt(substr(line, as, p - as));
+        p = p + 1;
+        // params
+        var ps = p;
+        while (p < llen && charAt(line, p) != 32) { p = p + 1; }
+        g_func_params[i] = toInt(substr(line, ps, p - ps));
+        p = p + 1;
+        // locals
+        var ls = p;
+        while (p < llen) { p = p + 1; }
+        g_func_locals[i] = toInt(substr(line, ls, p - ls));
+        i = i + 1;
+    }
+    // Read instr_count
+    num_start = pos;
+    while (pos < inlen && charAt(input, pos) != 10) { pos = pos + 1; }
+    g_num_instr = toInt(substr(input, num_start, pos - num_start));
+    pos = pos + 1;
+    // Read instructions
+    i = 0;
+    while (i < g_num_instr) {
+        var istart = pos;
+        while (pos < inlen && charAt(input, pos) != 10) { pos = pos + 1; }
+        var iline = substr(input, istart, pos - istart);
+        pos = pos + 1;
+        // Parse: op op1 op2
+        var ip2 = 0;
+        var ilen = len(iline);
+        var os = ip2;
+        while (ip2 < ilen && charAt(iline, ip2) != 32) { ip2 = ip2 + 1; }
+        var op = toInt(substr(iline, os, ip2 - os));
+        ip2 = ip2 + 1;
+        var o1s = ip2;
+        while (ip2 < ilen && charAt(iline, ip2) != 32) { ip2 = ip2 + 1; }
+        var op1 = toInt(substr(iline, o1s, ip2 - o1s));
+        ip2 = ip2 + 1;
+        var o2s = ip2;
+        while (ip2 < ilen) { ip2 = ip2 + 1; }
+        var op2 = toInt(substr(iline, o2s, ip2 - o2s));
+        g_bc[i * 3] = op;
+        g_bc[i * 3 + 1] = op1;
+        g_bc[i * 3 + 2] = op2;
+        i = i + 1;
+    }
+}
+// ===== VM execution =====
+func run_vm() {
+    g_ip = 0;
+    g_sp = 0;
+    g_call_depth = 0;
+    while (1) {
+        if (g_ip >= g_num_instr) {
+            println "VM error: ip out of bounds";
+            return;
+        }
+        var base = g_ip * 3;
+        var op = g_bc[base];
+        var op1 = g_bc[base + 1];
+        var op2 = g_bc[base + 2];
+        g_ip = g_ip + 1;
+        if (op == OP_CONST) {
+            push(g_constants[op1]);
+        } else if (op == OP_NIL) {
+            push(v_nil());
+        } else if (op == OP_ADD) {
+            var b = pop();
+            var a = pop();
+            push(val_add(a, b));
+        } else if (op == OP_SUB) {
+            var b = pop();
+            var a = pop();
+            push(val_sub(a, b));
+        } else if (op == OP_MUL) {
+            var b = pop();
+            var a = pop();
+            push(val_mul(a, b));
+        } else if (op == OP_DIV) {
+            var b = pop();
+            var a = pop();
+            push(val_div(a, b));
+        } else if (op == OP_MOD) {
+            var b = pop();
+            var a = pop();
+            push(val_mod(a, b));
+        } else if (op == OP_NEG) {
+            var a = pop();
+            push(val_neg(a));
+        } else if (op == OP_EQ) {
+            var b = pop();
+            var a = pop();
+            push(val_eq(a, b));
+        } else if (op == OP_NEQ) {
+            var b = pop();
+            var a = pop();
+            push(val_neq(a, b));
+        } else if (op == OP_LT) {
+            var b = pop();
+            var a = pop();
+            push(val_lt(a, b));
+        } else if (op == OP_GT) {
+            var b = pop();
+            var a = pop();
+            push(val_gt(a, b));
+        } else if (op == OP_LTE) {
+            var b = pop();
+            var a = pop();
+            push(val_lte(a, b));
+        } else if (op == OP_GTE) {
+            var b = pop();
+            var a = pop();
+            push(val_gte(a, b));
+        } else if (op == OP_AND) {
+            var b = pop();
+            var a = pop();
+            push(val_and(a, b));
+        } else if (op == OP_OR) {
+            var b = pop();
+            var a = pop();
+            push(val_or(a, b));
+        } else if (op == OP_NOT) {
+            var a = pop();
+            push(val_not(a));
+        } else if (op == OP_LOAD) {
+            push(g_locals[op1]);
+        } else if (op == OP_STORE) {
+            g_locals[op1] = pop();
+        } else if (op == OP_LOAD_GLOBAL) {
+            push(g_globals[op1]);
+        } else if (op == OP_STORE_GLOBAL) {
+            g_globals[op1] = pop();
+        } else if (op == OP_PRINT) {
+            var v = pop();
+            val_print(v, 0);
+        } else if (op == OP_PRINTLN) {
+            var v = pop();
+            val_print(v, 1);
+        } else if (op == OP_JMP) {
+            g_ip = op1;
+        } else if (op == OP_JMPF) {
+            var v = pop();
+            if (val_truthy(v) == 0) { g_ip = op1; }
+        } else if (op == OP_CALL) {
+            // Pop arguments
+            var args = array(256, 0);
+            var ai = op2 - 1;
+            while (ai >= 0) {
+                args[ai] = pop();
+                ai = ai - 1;
+            }
+            // Save frame
+            g_call_ret[g_call_depth] = g_ip;
+            g_call_old_locals[g_call_depth] = g_locals;
+            g_call_depth = g_call_depth + 1;
+            // Allocate new locals
+            var nlocals = g_func_locals[op1];
+            var local_size = nlocals;
+            if (local_size < 1) { local_size = 1; }
+            var new_locals = array(local_size, v_nil());
+            var j = 0;
+            while (j < op2 && j < nlocals) {
+                new_locals[j] = args[j];
+                j = j + 1;
+            }
+            g_locals = new_locals;
+            g_ip = g_func_addrs[op1];
+        } else if (op == OP_RET) {
+            var ret_val = pop();
+            g_call_depth = g_call_depth - 1;
+            g_locals = g_call_old_locals[g_call_depth];
+            g_ip = g_call_ret[g_call_depth];
+            push(ret_val);
+        } else if (op == OP_ARRAY) {
+            var arr_size = op1;
+            if (arr_size < 1) { arr_size = 1; }
+            var items = array(arr_size, v_nil());
+            var k = op1 - 1;
+            while (k >= 0) {
+                items[k] = pop();
+                k = k - 1;
+            }
+            push(v_arr(items));
+        } else if (op == OP_INDEX) {
+            var idx = pop();
+            var arr = pop();
+            if (arr[0] == VAL_ARRAY) {
+                var i2 = idx[1];
+                if (i2 < 0 || i2 >= len(arr[1])) {
+                    println "VM error: array index out of bounds";
+                } else {
+                    push(arr[1][i2]);
+                }
+            } else if (arr[0] == VAL_STRING) {
+                push(val_charat(arr, idx));
+            } else {
+                println "VM error: cannot index non-array/string";
+            }
+        } else if (op == OP_INDEX_SET) {
+            var val = pop();
+            var idx = pop();
+            var arr = pop();
+            if (arr[0] == VAL_ARRAY) {
+                var i2 = idx[1];
+                if (i2 < 0 || i2 >= len(arr[1])) {
+                    println "VM error: array index out of bounds";
+                } else {
+                    arr[1][i2] = val;
+                }
+            } else {
+                println "VM error: cannot index-assign non-array";
+            }
+        } else if (op == OP_POP) {
+            pop();
+        } else if (op == OP_HALT) {
+            return;
+        } else if (op == OP_CONCAT) {
+            var b = pop();
+            var a = pop();
+            push(val_add(a, b));
+        } else if (op == OP_LEN) {
+            var v = pop();
+            push(val_len(v));
+        } else if (op == OP_CHARAT) {
+            var idx = pop();
+            var s = pop();
+            push(val_charat(s, idx));
+        } else if (op == OP_SUBSTR) {
+            var lv = pop();
+            var sv = pop();
+            var s2 = pop();
+            push(val_substr(s2, sv, lv));
+        } else if (op == OP_TOSTRING) {
+            var v = pop();
+            push(val_tostring(v));
+        } else if (op == OP_TOINT) {
+            var v = pop();
+            push(val_toint(v));
+        } else if (op == OP_STRCMP) {
+            var b = pop();
+            var a = pop();
+            push(val_strcmp(a, b));
+        } else if (op == OP_READALL) {
+            var input = readAll();
+            push(v_str(input));
+        } else if (op == OP_MAKE_ARRAY) {
+            var init = pop();
+            var sizev = pop();
+            var sz = sizev[1];
+            if (sz < 0) { sz = 0; }
+            var arr_sz = sz;
+            if (arr_sz < 1) { arr_sz = 1; }
+            var new_arr = array(arr_sz, init);
+            push(v_arr(new_arr));
+        } else if (op == OP_ARGC) {
+            push(v_int(g_prog_argc));
+        } else if (op == OP_ARGV) {
+            var idxv = pop();
+            var idx = idxv[1];
+            // Interpreted argv[i] = boot argv[i + g_prog_argv_offset]
+            var boot_idx = idx + g_prog_argv_offset;
+            if (boot_idx < 0 || boot_idx >= argc()) {
+                push(v_str(""));
+            } else {
+                push(v_str(argv(boot_idx)));
+            }
+        } else if (op == OP_READFILE) {
+            var pathv = pop();
+            var content = readFile(pathv[1]);
+            push(v_str(content));
+        } else if (op == OP_FILEEXISTS) {
+            var pathv = pop();
+            push(v_int(fileExists(pathv[1])));
+        } else {
+            print "VM error: unknown opcode ";
+            println toString(op);
+            return;
+        }
+    }
+}
+// ===== Main =====
+func run_bytecode(input) {
+    load_bytecode(input);
+    // Initialize globals to nil
+    var gi = 0;
+    while (gi < 1024) {
+        g_globals[gi] = v_nil();
+        gi = gi + 1;
+    }
+    run_vm();
+    return 0;
+}
+func main() {
+    var n = argc();
+    var bytecode_input = "";
+    if (n >= 2) {
+        var filename = argv(1);
+        bytecode_input = readFile(filename);
+        // Interpreted program args: argv[1] is bytecode file, rest are program args
+        g_prog_argc = n - 1;
+        g_prog_argv_offset = 1;
+    } else {
+        // Read from stdin
+        bytecode_input = readAll();
+        g_prog_argc = 0;
+        g_prog_argv_offset = 0;
+    }
+    run_bytecode(bytecode_input);
+    return 0;
+}

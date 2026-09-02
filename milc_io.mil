@@ -1,0 +1,48 @@
+// milc_io.mil - Bytecode serialization in minilang
+// Functional equivalent of milc_io.c, using text format (MINILANGBC)
+// instead of binary (!milc) because minilang has no binary file I/O.
+//
+// Text format (same as compiler.output_bytecode / vm.load_bytecode):
+//   "MINILANGBC"
+//   const_count
+//   for each const: "0 <int>" or "1 <escaped_string>"
+//   func_count
+//   for each func: "<name> <address> <param_count> <local_count>"
+//   instr_count
+//   for each instr: "<op> <arg1> <arg2>"
+require compiler;
+// Magic string for text bytecode format (binary equivalent: "!milc")
+var MILC_TEXT_MAGIC = "MINILANGBC";
+// Check if a string is text bytecode (equivalent to is_milc_file)
+func is_bytecode(text) {
+    if (len(text) < 11) { return 0; }
+    return strcmp(substr(text, 0, 11), MILC_TEXT_MAGIC) == 0;
+}
+// Serialize compiler state to text bytecode (equivalent to program_write_milc)
+// Returns the bytecode string; caller prints to stdout to "write" to file.
+func serialize(state) {
+    return compiler.output_bytecode(state);
+}
+// Compile source file and serialize to text bytecode
+func compile_and_serialize(file) {
+    var src = readFile(file);
+    var state = compiler.make_state(src);
+    state[28] = compiler.dirname(file);
+    compiler.lex_source(state);
+    compiler.parse_program(state);
+    compiler.compile_program(state);
+    return serialize(state);
+}
+// CLI: serialize a .mil file to text bytecode on stdout
+func main() {
+    var n = argc();
+    if (n < 2) {
+        println "Usage: milc_io <source.mil>";
+        println "  Compiles source and outputs text bytecode to stdout";
+        return 1;
+    }
+    var file = argv(1);
+    var bc = compile_and_serialize(file);
+    print bc;
+    return 0;
+}

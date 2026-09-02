@@ -1,0 +1,659 @@
+// llvm_gen.mil - LLVM IR generator implemented in minilang
+// Requires compiler.mil for lexer, parser, and shared constants.
+// Usage: ./minilang run llvm_gen.mil <source.mil>
+//   Outputs LLVM IR to stdout (redirect to .ll file)
+require compiler;
+// ===== IR generation state =====
+var g_ir_buf = "";
+var g_global_buf = "";
+var g_alloca_buf = "";
+var g_temp_counter = 0;
+var g_block_counter = 0;
+var g_var_names = array(256, 0);
+var g_var_regs = array(256, 0);
+var g_var_count = 0;
+var g_global_names = array(256, 0);
+var g_global_ptrs = array(256, 0);
+var g_global_count = 0;
+var g_break_targets = array(64, 0);
+var g_break_count = 0;
+var g_str_counter = 0;
+// ===== Helpers =====
+func ir_emit(s) {
+    g_ir_buf = g_ir_buf + s;
+}
+func ir_emit_global(s) {
+    g_global_buf = g_global_buf + s;
+}
+func ir_emit_alloca(s) {
+    g_alloca_buf = g_alloca_buf + s;
+}
+func new_temp() {
+    var name = "%t" + toString(g_temp_counter);
+    g_temp_counter = g_temp_counter + 1;
+    return name;
+}
+func new_block() {
+    var name = "L" + toString(g_block_counter);
+    g_block_counter = g_block_counter + 1;
+    return name;
+}
+func find_var(name) {
+    var i = 0;
+    while (i < g_var_count) {
+        if (strcmp(g_var_names[i], name) == 0) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+func find_global(name) {
+    var i = 0;
+    while (i < g_global_count) {
+        if (strcmp(g_global_names[i], name) == 0) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+func add_var(name) {
+    var existing = find_var(name);
+    if (existing >= 0) { return g_var_regs[existing]; }
+    g_var_names[g_var_count] = name;
+    var reg = new_temp();
+    g_var_regs[g_var_count] = reg;
+    ir_emit_alloca("  " + reg + " = alloca %Value, align 8\n");
+    var idx = g_var_count;
+    g_var_count = g_var_count + 1;
+    return g_var_regs[idx];
+}
+func push_break(label) {
+    g_break_targets[g_break_count] = label;
+    g_break_count = g_break_count + 1;
+}
+func pop_break() {
+    if (g_break_count > 0) { g_break_count = g_break_count - 1; }
+}
+func hex_digit(n) {
+    if (n < 10) { return n + 48; }
+    return n + 55; // 'A' = 65, 10 + 55 = 65
+}
+func escape_llvm_string(s) {
+    var r = "";
+    var i = 0;
+    while (i < len(s)) {
+        var c = charAt(s, i);
+        if (c == 34) { r = r + "\\22"; }
+        else if (c == 92) { r = r + "\\5C"; }
+        else if (c == 10) { r = r + "\\0A"; }
+        else if (c == 9) { r = r + "\\09"; }
+        else if (c < 32 || c >= 127) {
+            var hi = c / 16;
+            var lo = c % 16;
+            r = r + "\\";
+            r = r + char_to_str_llvm(hex_digit(hi));
+            r = r + char_to_str_llvm(hex_digit(lo));
+        } else {
+            r = r + char_to_str_llvm(c);
+        }
+        i = i + 1;
+    }
+    return r;
+}
+func char_to_str_llvm(c) {
+    // Same as compiler.char_to_str but accessible without prefix
+    if (c == 32) { return " "; }
+    if (c == 33) { return "!"; }
+    if (c == 35) { return "#"; }
+    if (c == 36) { return "$"; }
+    if (c == 37) { return "%"; }
+    if (c == 38) { return "&"; }
+    if (c == 39) { return "'"; }
+    if (c == 40) { return "("; }
+    if (c == 41) { return ")"; }
+    if (c == 42) { return "*"; }
+    if (c == 43) { return "+"; }
+    if (c == 44) { return ","; }
+    if (c == 45) { return "-"; }
+    if (c == 46) { return "."; }
+    if (c == 47) { return "/"; }
+    if (c >= 48 && c <= 57) {
+        var digits = "0123456789";
+        return substr(digits, c - 48, 1);
+    }
+    if (c == 58) { return ":"; }
+    if (c == 59) { return ";"; }
+    if (c == 60) { return "<"; }
+    if (c == 61) { return "="; }
+    if (c == 62) { return ">"; }
+    if (c == 63) { return "?"; }
+    if (c == 64) { return "@"; }
+    if (c >= 65 && c <= 90) {
+        var upper = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        return substr(upper, c - 65, 1);
+    }
+    if (c == 91) { return "["; }
+    if (c == 93) { return "]"; }
+    if (c == 94) { return "^"; }
+    if (c == 95) { return "_"; }
+    if (c == 96) { return "`"; }
+    if (c >= 97 && c <= 122) {
+        var lower = "abcdefghijklmnopqrstuvwxyz";
+        return substr(lower, c - 97, 1);
+    }
+    if (c == 123) { return "{"; }
+    if (c == 124) { return "|"; }
+    if (c == 125) { return "}"; }
+    if (c == 126) { return "~"; }
+    return " ";
+}
+// ===== Statement compilation =====
+func compile_stmt(node) {
+    var typ = node[0];
+    if (typ == NODE_VAR_DECL) {
+        var reg = add_var(node[1]);
+        var val = compile_expr(node[2]);
+        ir_emit("  store %Value " + val + ", %Value* " + reg + ", align 8\n");
+    } else if (typ == NODE_ASSIGN) {
+        var idx = find_var(node[1]);
+        if (idx >= 0) {
+            var val = compile_expr(node[2]);
+            ir_emit("  store %Value " + val + ", %Value* " + g_var_regs[idx] + ", align 8\n");
+        } else {
+            var gidx = find_global(node[1]);
+            if (gidx >= 0) {
+                var val = compile_expr(node[2]);
+                ir_emit("  store %Value " + val + ", %Value* " + g_global_ptrs[gidx] + ", align 8\n");
+            }
+        }
+    } else if (typ == NODE_INDEX_ASSIGN) {
+        var arr = compile_expr(node[1]);
+        var idx = compile_expr(node[2]);
+        var val = compile_expr(node[3]);
+        var idxval = new_temp();
+        ir_emit("  " + idxval + " = extractvalue %Value " + idx + ", 1\n");
+        ir_emit("  call void @ml_array_set(%Value " + arr + ", i64 " + idxval + ", %Value " + val + ")\n");
+    } else if (typ == NODE_IF) {
+        var cond = compile_expr(node[1]);
+        var condval = new_temp();
+        ir_emit("  " + condval + " = extractvalue %Value " + cond + ", 1\n");
+        var condbool = new_temp();
+        ir_emit("  " + condbool + " = icmp ne i64 " + condval + ", 0\n");
+        var then_b = new_block();
+        var else_b = new_block();
+        var merge_b = new_block();
+        if (node[4] == 1) {
+            ir_emit("  br i1 " + condbool + ", label %" + then_b + ", label %" + else_b + "\n");
+            ir_emit(then_b + ":\n");
+            compile_stmt(node[2]);
+            ir_emit("  br label %" + merge_b + "\n");
+            ir_emit(else_b + ":\n");
+            compile_stmt(node[3]);
+            ir_emit("  br label %" + merge_b + "\n");
+            ir_emit(merge_b + ":\n");
+        } else {
+            ir_emit("  br i1 " + condbool + ", label %" + then_b + ", label %" + merge_b + "\n");
+            ir_emit(then_b + ":\n");
+            compile_stmt(node[2]);
+            ir_emit("  br label %" + merge_b + "\n");
+            ir_emit(merge_b + ":\n");
+        }
+    } else if (typ == NODE_WHILE) {
+        var cond_b = new_block();
+        var body_b = new_block();
+        var end_b = new_block();
+        push_break(end_b);
+        ir_emit("  br label %" + cond_b + "\n");
+        ir_emit(cond_b + ":\n");
+        var cond = compile_expr(node[1]);
+        var condval = new_temp();
+        ir_emit("  " + condval + " = extractvalue %Value " + cond + ", 1\n");
+        var condbool = new_temp();
+        ir_emit("  " + condbool + " = icmp ne i64 " + condval + ", 0\n");
+        ir_emit("  br i1 " + condbool + ", label %" + body_b + ", label %" + end_b + "\n");
+        ir_emit(body_b + ":\n");
+        compile_stmt(node[2]);
+        ir_emit("  br label %" + cond_b + "\n");
+        ir_emit(end_b + ":\n");
+        pop_break();
+    } else if (typ == NODE_RETURN) {
+        if (node[2] == 1) {
+            var val = compile_expr(node[1]);
+            ir_emit("  ret %Value " + val + "\n");
+        } else {
+            ir_emit("  ret %Value { i64 0, i64 0 }\n");
+        }
+    } else if (typ == NODE_PRINT) {
+        var val = compile_expr(node[1]);
+        var nl = "0";
+        if (node[2] == 1) { nl = "1"; }
+        ir_emit("  call void @ml_print(%Value " + val + ", i32 " + nl + ")\n");
+    } else if (typ == NODE_BREAK) {
+        if (g_break_count > 0) {
+            ir_emit("  br label %" + g_break_targets[g_break_count - 1] + "\n");
+        }
+    } else if (typ == NODE_BLOCK) {
+        var i = 0;
+        while (i < node[1]) {
+            compile_stmt(node[2][i]);
+            i = i + 1;
+        }
+    } else if (typ == NODE_EXPR_STMT) {
+        compile_expr(node[1]);
+    }
+}
+// ===== Expression compilation =====
+func compile_expr(node) {
+    var typ = node[0];
+    if (typ == NODE_INT) {
+        var r = new_temp();
+        ir_emit("  " + r + " = insertvalue %Value { i64 1, i64 0 }, i64 " + toString(node[1]) + ", 1\n");
+        return r;
+    } else if (typ == NODE_STRING) {
+        var gname = "@.str" + toString(g_str_counter);
+        g_str_counter = g_str_counter + 1;
+        var escaped = escape_llvm_string(node[1]);
+        var slen = len(node[1]) + 1;
+        ir_emit_global(gname + " = private unnamed_addr constant [" + toString(slen) + " x i8] c\"" + escaped + "\\00\", align 1\n");
+        var ptr = new_temp();
+        ir_emit("  " + ptr + " = getelementptr inbounds [" + toString(slen) + " x i8], [" + toString(slen) + " x i8]* " + gname + ", i64 0, i64 0\n");
+        var iptr = new_temp();
+        ir_emit("  " + iptr + " = ptrtoint i8* " + ptr + " to i64\n");
+        var r = new_temp();
+        ir_emit("  " + r + " = insertvalue %Value { i64 2, i64 0 }, i64 " + iptr + ", 1\n");
+        return r;
+    } else if (typ == NODE_ARRAY_LIT) {
+        var count = node[1];
+        var elem_size = count;
+        if (elem_size < 1) { elem_size = 1; }
+        var elems = array(elem_size, "");
+        var i = 0;
+        while (i < count) {
+            elems[i] = compile_expr(node[2][i]);
+            i = i + 1;
+        }
+        var arrptr = new_temp();
+        var acount = count;
+        if (acount < 1) { acount = 1; }
+        ir_emit("  " + arrptr + " = alloca [" + toString(acount) + " x %Value], align 8\n");
+        i = 0;
+        while (i < count) {
+            var elemptr = new_temp();
+            ir_emit("  " + elemptr + " = getelementptr inbounds [" + toString(acount) + " x %Value], [" + toString(acount) + " x %Value]* " + arrptr + ", i64 0, i64 " + toString(i) + "\n");
+            ir_emit("  store %Value " + elems[i] + ", %Value* " + elemptr + ", align 8\n");
+            i = i + 1;
+        }
+        var dataptr = new_temp();
+        ir_emit("  " + dataptr + " = getelementptr inbounds [" + toString(acount) + " x %Value], [" + toString(acount) + " x %Value]* " + arrptr + ", i64 0, i64 0\n");
+        var r = new_temp();
+        ir_emit("  " + r + " = call %Value @ml_array_create(i64 " + toString(count) + ", %Value* " + dataptr + ")\n");
+        return r;
+    } else if (typ == NODE_VAR) {
+        var idx = find_var(node[1]);
+        if (idx >= 0) {
+            var r = new_temp();
+            ir_emit("  " + r + " = load %Value, %Value* " + g_var_regs[idx] + ", align 8\n");
+            return r;
+        }
+        var gidx = find_global(node[1]);
+        if (gidx >= 0) {
+            var r = new_temp();
+            ir_emit("  " + r + " = load %Value, %Value* " + g_global_ptrs[gidx] + ", align 8\n");
+            return r;
+        }
+        return "%t0";
+    } else if (typ == NODE_BINARY) {
+        var left = compile_expr(node[2]);
+        var right = compile_expr(node[3]);
+        var r = new_temp();
+        var op = node[1];
+        var ir_func = "";
+        if (op == TOK_PLUS) { ir_func = "@ml_add"; }
+        else if (op == TOK_MINUS) { ir_func = "@ml_sub"; }
+        else if (op == TOK_STAR) { ir_func = "@ml_mul"; }
+        else if (op == TOK_SLASH) { ir_func = "@ml_div"; }
+        else if (op == TOK_PERCENT) { ir_func = "@ml_mod"; }
+        else if (op == TOK_EQEQ) { ir_func = "@ml_eq"; }
+        else if (op == TOK_NEQ) { ir_func = "@ml_neq"; }
+        else if (op == TOK_LT) { ir_func = "@ml_lt"; }
+        else if (op == TOK_GT) { ir_func = "@ml_gt"; }
+        else if (op == TOK_LTE) { ir_func = "@ml_lte"; }
+        else if (op == TOK_GTE) { ir_func = "@ml_gte"; }
+        else if (op == TOK_AND) { ir_func = "@ml_and"; }
+        else if (op == TOK_OR) { ir_func = "@ml_or"; }
+        ir_emit("  " + r + " = call %Value " + ir_func + "(%Value " + left + ", %Value " + right + ")\n");
+        return r;
+    } else if (typ == NODE_UNARY) {
+        var operand = compile_expr(node[2]);
+        var r = new_temp();
+        if (node[1] == TOK_MINUS) {
+            ir_emit("  " + r + " = call %Value @ml_neg(%Value " + operand + ")\n");
+        } else {
+            ir_emit("  " + r + " = call %Value @ml_not(%Value " + operand + ")\n");
+        }
+        return r;
+    } else if (typ == NODE_CALL) {
+        var name = node[1];
+        if (strcmp(name, "len") == 0) {
+            var a = compile_expr(node[3][0]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_len(%Value " + a + ")\n");
+            return r;
+        }
+        if (strcmp(name, "charAt") == 0) {
+            var a = compile_expr(node[3][0]);
+            var b = compile_expr(node[3][1]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_charat(%Value " + a + ", %Value " + b + ")\n");
+            return r;
+        }
+        if (strcmp(name, "substr") == 0) {
+            var a = compile_expr(node[3][0]);
+            var b = compile_expr(node[3][1]);
+            var c = compile_expr(node[3][2]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_substr(%Value " + a + ", %Value " + b + ", %Value " + c + ")\n");
+            return r;
+        }
+        if (strcmp(name, "toString") == 0) {
+            var a = compile_expr(node[3][0]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_tostring(%Value " + a + ")\n");
+            return r;
+        }
+        if (strcmp(name, "toInt") == 0) {
+            var a = compile_expr(node[3][0]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_toint(%Value " + a + ")\n");
+            return r;
+        }
+        if (strcmp(name, "strcmp") == 0) {
+            var a = compile_expr(node[3][0]);
+            var b = compile_expr(node[3][1]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_strcmp(%Value " + a + ", %Value " + b + ")\n");
+            return r;
+        }
+        if (strcmp(name, "readAll") == 0) {
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_readall()\n");
+            return r;
+        }
+        if (strcmp(name, "array") == 0) {
+            var a = compile_expr(node[3][0]);
+            var b = compile_expr(node[3][1]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_array_make(%Value " + a + ", %Value " + b + ")\n");
+            return r;
+        }
+        if (strcmp(name, "argc") == 0) {
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_argc()\n");
+            return r;
+        }
+        if (strcmp(name, "argv") == 0) {
+            var a = compile_expr(node[3][0]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_argv(%Value " + a + ")\n");
+            return r;
+        }
+        if (strcmp(name, "readFile") == 0) {
+            var a = compile_expr(node[3][0]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_readfile(%Value " + a + ")\n");
+            return r;
+        }
+        if (strcmp(name, "fileExists") == 0) {
+            var a = compile_expr(node[3][0]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_fileexists(%Value " + a + ")\n");
+            return r;
+        }
+        // User function call - resolve alias
+        // Note: aliases are stored in the compiler state at indices 25,26,27
+        // But since we required compiler, the state is passed in. We'll resolve
+        // by checking if the name exists as a function; if not, try alias targets.
+        var cname = name;
+        // Find function index
+        var fi = -1;
+        var fi2 = 0;
+        while (fi2 < g_func_count_ref) {
+            if (strcmp(g_func_names_ref[fi2][1], cname) == 0) { fi = fi2; }
+            fi2 = fi2 + 1;
+        }
+        if (fi < 0) {
+            // Try alias resolution from compiler state
+            var ai = 0;
+            while (ai < g_alias_count_ref) {
+                if (strcmp(g_alias_names_ref[ai], cname) == 0) {
+                    cname = g_alias_targets_ref[ai];
+                }
+                ai = ai + 1;
+            }
+            fi2 = 0;
+            while (fi2 < g_func_count_ref) {
+                if (strcmp(g_func_names_ref[fi2][1], cname) == 0) { fi = fi2; }
+                fi2 = fi2 + 1;
+            }
+        }
+        // Compile args
+        var argc = node[2];
+        var arg_size = argc;
+        if (arg_size < 1) { arg_size = 1; }
+        var args = array(arg_size, "");
+        var i = 0;
+        while (i < argc) {
+            args[i] = compile_expr(node[3][i]);
+            i = i + 1;
+        }
+        var r = new_temp();
+        var call_str = "  " + r + " = call %Value @user_" + cname + "(";
+        i = 0;
+        while (i < argc) {
+            if (i > 0) { call_str = call_str + ", "; }
+            call_str = call_str + "%Value " + args[i];
+            i = i + 1;
+        }
+        call_str = call_str + ")\n";
+        ir_emit(call_str);
+        return r;
+    } else if (typ == NODE_INDEX) {
+        var arr = compile_expr(node[1]);
+        var idx = compile_expr(node[2]);
+        var idxval = new_temp();
+        ir_emit("  " + idxval + " = extractvalue %Value " + idx + ", 1\n");
+        var r = new_temp();
+        ir_emit("  " + r + " = call %Value @ml_array_get(%Value " + arr + ", i64 " + idxval + ")\n");
+        return r;
+    } else if (typ == NODE_NIL) {
+        var r = new_temp();
+        ir_emit("  " + r + " = insertvalue %Value { i64 0, i64 0 }, i64 0, 1\n");
+        return r;
+    }
+    return "%t0";
+}
+// References to compiler state (set in generate_ir)
+var g_func_names_ref = 0;
+var g_func_count_ref = 0;
+var g_alias_names_ref = 0;
+var g_alias_targets_ref = 0;
+var g_alias_count_ref = 0;
+var g_globals_ref = 0;
+var g_global_count_ref = 0;
+// ===== Main IR generation =====
+func generate_ir(state) {
+    g_ir_buf = "";
+    g_global_buf = "";
+    g_temp_counter = 0;
+    g_block_counter = 0;
+    g_str_counter = 0;
+    g_global_count = 0;
+    g_break_count = 0;
+    // Set references to compiler state
+    g_func_names_ref = state[8];
+    g_func_count_ref = state[9];
+    g_alias_names_ref = state[25];
+    g_alias_targets_ref = state[26];
+    g_alias_count_ref = state[27];
+    g_globals_ref = state[17];
+    g_global_count_ref = state[18];
+    // Module header
+    ir_emit(";; Generated by minilang LLVM backend\n");
+    ir_emit("%Value = type { i64, i64 }\n");
+    ir_emit("%Array = type { i64, %Value* }\n\n");
+    // External runtime declarations
+    ir_emit("declare void @ml_print(%Value, i32)\n");
+    ir_emit("declare %Value @ml_add(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_sub(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_mul(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_div(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_mod(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_neg(%Value)\n");
+    ir_emit("declare %Value @ml_eq(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_neq(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_lt(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_gt(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_lte(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_gte(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_and(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_or(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_not(%Value)\n");
+    ir_emit("declare %Value @ml_array_create(i64, %Value*)\n");
+    ir_emit("declare %Value @ml_array_make(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_argc()\n");
+    ir_emit("declare %Value @ml_argv(%Value)\n");
+    ir_emit("declare %Value @ml_readfile(%Value)\n");
+    ir_emit("declare %Value @ml_fileexists(%Value)\n");
+    ir_emit("declare void @ml_set_args(i32, i8**)\n");
+    ir_emit("declare %Value @ml_array_get(%Value, i64)\n");
+    ir_emit("declare void @ml_array_set(%Value, i64, %Value)\n");
+    ir_emit("declare %Value @ml_len(%Value)\n");
+    ir_emit("declare %Value @ml_charat(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_substr(%Value, %Value, %Value)\n");
+    ir_emit("declare %Value @ml_tostring(%Value)\n");
+    ir_emit("declare %Value @ml_toint(%Value)\n");
+    ir_emit("declare %Value @ml_strcmp(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_readall()\n\n");
+    // Register top-level global variables
+    var gi = 0;
+    while (gi < g_global_count_ref) {
+        var gname = state[15][gi];
+        g_global_names[g_global_count] = gname;
+        var ptrname = "@global_" + gname;
+        g_global_ptrs[g_global_count] = ptrname;
+        ir_emit_global(ptrname + " = global %Value zeroinitializer, align 8\n");
+        g_global_count = g_global_count + 1;
+        gi = gi + 1;
+    }
+    // Generate each user function
+    var fi = 0;
+    while (fi < g_func_count_ref) {
+        var f = state[8][fi];
+        var fname = f[1];
+        var param_count = f[2];
+        // Reset per-function state
+        g_var_count = 0;
+        g_alloca_buf = "";
+        // Function signature
+        var sig = "define %Value @user_" + fname + "(";
+        var pi = 0;
+        while (pi < param_count) {
+            if (pi > 0) { sig = sig + ", "; }
+            sig = sig + "%Value %p" + toString(pi);
+            pi = pi + 1;
+        }
+        sig = sig + ") {\n";
+        ir_emit(sig);
+        ir_emit("entry:\n");
+        // Add params as vars
+        pi = 0;
+        while (pi < param_count) {
+            var preg = add_var(f[3][pi]);
+            ir_emit("  store %Value %p" + toString(pi) + ", %Value* " + preg + ", align 8\n");
+            pi = pi + 1;
+        }
+        // If main, initialize globals first
+        if (strcmp(fname, "main") == 0) {
+            var gi2 = 0;
+            while (gi2 < g_global_count_ref) {
+                var gval = compile_expr(state[17][gi2]);
+                ir_emit("  store %Value " + gval + ", %Value* " + g_global_ptrs[gi2] + ", align 8\n");
+                gi2 = gi2 + 1;
+            }
+        }
+        // Compile body
+        compile_stmt(f[4]);
+        // Implicit ret nil
+        ir_emit("  ret %Value { i64 0, i64 0 }\n");
+        // Insert allocas after "entry:\n"
+        // We need to find "entry:\n" in the function and insert allocas after it
+        // Since we build the string sequentially, we can reconstruct:
+        // The function starts with sig + "entry:\n" + param stores + body + ret
+        // allocas should go after "entry:\n" and before param stores
+        // Easiest: rebuild the function with allocas inserted
+        // Actually, let's just emit allocas before param stores by tracking position
+        // For simplicity, we'll do a string replacement approach
+        if (len(g_alloca_buf) > 0) {
+            // Find last "entry:\n" (e,n,t,r,y,:,\n) - si points to final \n
+            var buf_len = len(g_ir_buf);
+            var entry_pos = -1;
+            var si = buf_len - 1;
+            while (si >= 6) {
+                if (charAt(g_ir_buf, si) == 10 && charAt(g_ir_buf, si - 1) == 58 && charAt(g_ir_buf, si - 2) == 121 && charAt(g_ir_buf, si - 3) == 114 && charAt(g_ir_buf, si - 4) == 116 && charAt(g_ir_buf, si - 5) == 110 && charAt(g_ir_buf, si - 6) == 101) {
+                    entry_pos = si + 1;
+                    si = -1;
+                } else {
+                    si = si - 1;
+                }
+            }
+            if (entry_pos >= 0) {
+                var before = substr(g_ir_buf, 0, entry_pos);
+                var after = substr(g_ir_buf, entry_pos, buf_len - entry_pos);
+                g_ir_buf = before + g_alloca_buf + after;
+            }
+        }
+        ir_emit("}\n\n");
+        fi = fi + 1;
+    }
+    // main function (C entry)
+    ir_emit("define i32 @main(i32 %argc, i8** %argv) {\n");
+    ir_emit("entry:\n");
+    ir_emit("  call void @ml_set_args(i32 %argc, i8** %argv)\n");
+    ir_emit("  %result = call %Value @user_main()\n");
+    ir_emit("  %exitcode = extractvalue %Value %result, 1\n");
+    ir_emit("  ret i32 0\n");
+    ir_emit("}\n");
+    // Prepend global declarations before first "define"
+    var first_def = -1;
+    var buf_len2 = len(g_ir_buf);
+    var sj = 0;
+    while (sj < buf_len2 - 7) {
+        if (charAt(g_ir_buf, sj) == 10 && charAt(g_ir_buf, sj + 1) == 100 && charAt(g_ir_buf, sj + 2) == 101 && charAt(g_ir_buf, sj + 3) == 102 && charAt(g_ir_buf, sj + 4) == 105 && charAt(g_ir_buf, sj + 5) == 110 && charAt(g_ir_buf, sj + 6) == 101) {
+            first_def = sj + 1;
+            sj = buf_len2;
+        } else {
+            sj = sj + 1;
+        }
+    }
+    if (first_def >= 0 && len(g_global_buf) > 0) {
+        var before2 = substr(g_ir_buf, 0, first_def);
+        var after2 = substr(g_ir_buf, first_def, buf_len2 - first_def);
+        g_ir_buf = before2 + g_global_buf + "\n" + after2;
+    }
+    return g_ir_buf;
+}
+// ===== Main =====
+func main() {
+    var n = argc();
+    if (n < 2) {
+        println "Usage: llvm_gen <source.mil>";
+        return 1;
+    }
+    var file = argv(1);
+    var src = readFile(file);
+    var state = compiler.make_state(src);
+    state[28] = compiler.dirname(file);
+    compiler.lex_source(state);
+    compiler.parse_program(state);
+    var ir = generate_ir(state);
+    print ir;
+    return 0;
+}

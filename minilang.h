@@ -222,6 +222,7 @@ typedef enum {
     OP_ARGC,          // push command-line argument count
     OP_ARGV,          // pop index, push argv[index] as string
     OP_READFILE,      // pop path, push file contents as string
+    OP_FILEEXISTS,    // pop path, push 1 if file exists else 0
 } OpCode;
 
 typedef struct {

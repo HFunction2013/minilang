@@ -10,9 +10,15 @@
 - **双后端**：
   - 字节码 + 栈式 VM（快速开发、调试）
   - LLVM IR → 原生可执行文件（高性能）
-- **可自举**：用 minilang 写的编译器 (`compiler.mil`) 能编译自身，且输出与 C boot 编译器完全一致
+- **完整自举**：所有 C 源文件均有对应的 minilang 实现，仅靠最小 boot VM 即可独立运行完整工具链
+  - `compiler.mil`：词法分析 + 解析 + 字节码生成（对应 lexer.c/parser.c/bytecode.c）
+  - `vm.mil`：纯 mil 栈式虚拟机（对应 vm.c/value.c/runtime.c）
+  - `llvm_gen.mil`：LLVM IR 生成器（对应 llvm_gen.c）
+  - `milc_io.mil`：字节码序列化（对应 milc_io.c，文本格式）
+  - `main.mil`：统一 CLI 入口（对应 main.c）
+- **自举编译器**：`compiler.mil` 能编译自身，输出与 C boot 编译器逐字节一致
 - **无外部依赖**：不使用文件、网络等外部交互（除 console I/O）
-- **内置函数**：`len`, `charAt`, `substr`, `toString`, `toInt`, `strcmp`, `readAll`, `array`
+- **内置函数**：`len`, `charAt`, `substr`, `toString`, `toInt`, `strcmp`, `readAll`, `array`, `argc`, `argv`, `readFile`, `fileExists`
 - **模块系统（require）**：从 syslib 或脚本目录加载模块，支持命名空间访问和选择性导入
 - **REPL**：交互式命令行，支持多行输入、表达式求值、跨行保留函数/变量/模块
 - **.milc 字节码文件**：可编译为二进制字节码文件，随时加载运行
@@ -198,6 +204,66 @@ mil> quit
 ```
 SUCCESS: Boot and self-hosted bytecode are IDENTICAL!
 ```
+## 纯 mil 实现的 VM
+`vm.mil` 是用 minilang 语言实现的完整栈式虚拟机，支持加载文本格式字节码并执行，与 C 实现的 VM 行为完全一致。
+```bash
+# 编译程序为文本字节码
+./minilang dump-text tests/hello.mil > /tmp/hello.bc
+# 用 mil VM 运行字节码
+./minilang run vm.mil /tmp/hello.bc
+# 从 stdin 读取字节码
+./minilang dump-text tests/hello.mil | ./minilang run vm.mil
+# 完整自举链路：boot 编译 compiler.mil -> mil VM 运行 -> 编译 compiler.mil
+./minilang dump-text compiler.mil > /tmp/compiler.bc
+./minilang run vm.mil /tmp/compiler.bc dump-text compiler.mil
+```
+
+## 完整自举架构
+
+所有 C 源文件均有对应的 minilang 实现，形成完整自举工具链：
+
+| C 源文件 | mil 实现 | 功能 |
+|----------|----------|------|
+| lexer.c | compiler.mil | 词法分析 |
+| parser.c | compiler.mil | 语法解析 + require 模块系统 |
+| bytecode.c | compiler.mil | AST → 字节码编译 |
+| vm.c | vm.mil | 栈式虚拟机 |
+| value.c | vm.mil | 值类型与运算 |
+| runtime.c | vm.mil | 内置函数运行时 |
+| llvm_gen.c | llvm_gen.mil | AST → LLVM IR 生成 |
+| milc_io.c | milc_io.mil | 字节码序列化（文本格式） |
+| main.c | main.mil | 统一 CLI 入口 |
+
+仅需 boot 编译器将 `main.mil` 编译为字节码，再由 `vm.mil` 执行，即可脱离所有 C 代码独立运行完整工具链。
+
+### main.mil 统一入口
+
+`main.mil` 整合了编译器、VM 和 LLVM 生成器，提供与 C `main.c` 一致的 CLI：
+
+```bash
+# 编译并运行程序
+./minilang run main.mil run tests/hello.mil
+
+# 输出文本字节码
+./minilang run main.mil dump-text tests/hello.mil
+
+# 输出 LLVM IR
+./minilang run main.mil llvm tests/hello.mil
+```
+
+### 完整自举链路验证
+
+```bash
+# 1. boot 编译 main.mil（含 compiler/vm/llvm_gen 全部模块）为文本字节码
+./minilang dump-text main.mil > /tmp/main.bc
+
+# 2. mil VM 运行 main.bc，编译 compiler.mil
+./minilang run vm.mil /tmp/main.bc dump-text compiler.mil > /tmp/selfhost.txt
+
+# 3. 与 boot 直接编译对比
+./minilang dump-text compiler.mil > /tmp/boot.txt
+diff /tmp/boot.txt /tmp/selfhost.txt  # 完全一致
+```
 
 ## .milc 字节码文件格式
 
@@ -222,7 +288,11 @@ minilang/
 ├── milc_io.c         # .milc 字节码序列化/反序列化
 ├── runtime.c         # LLVM 后端 C 运行时
 ├── main.c            # CLI 入口（run/bytecode/llvm/build/repl/self-test）
-├── compiler.mil      # 自举编译器（minilang 语言实现）
+├── compiler.mil      # 自举编译器（minilang 语言实现，对应 lexer/parser/bytecode.c）
+├── vm.mil            # 纯 mil 实现的虚拟机（对应 vm.c/value.c/runtime.c）
+├── llvm_gen.mil      # 纯 mil 实现的 LLVM IR 生成器（对应 llvm_gen.c）
+├── milc_io.mil       # 纯 mil 实现的字节码序列化（对应 milc_io.c，文本格式）
+├── main.mil          # 纯 mil 实现的统一 CLI 入口（对应 main.c）
 ├── syslib/           # 内置模块库
 │   ├── math.mil      # 整数数学库
 │   └── string.mil    # 字符串工具库
@@ -243,11 +313,11 @@ minilang/
 
 每条指令 3 个整数（op, op1, op2），跳转目标为指令序号。
 
-文本格式（`dump-text`）：
+文本格式（`dump-text`）中字符串常量的换行、制表符、回车、反斜杠会被转义（`\n` `\t` `\r` `\\`），确保每行一条记录：
 ```
 MINILANGBC
 <常量数>
-<type> <value>     # type: 0=int, 1=string
+<type> <value>     # type: 0=int, 1=string（已转义）
 ...
 <函数数>
 <name> <address> <params> <locals>

@@ -220,6 +220,14 @@ Value vm_run(VM *vm) {
                 free(buf);
                 break;
             }
+            case OP_FILEEXISTS: {
+                Value pathv = pop(vm);
+                const char *path = pathv.as.string;
+                FILE *f = fopen(path, "rb");
+                if (f) { fclose(f); push(vm, make_int(1)); }
+                else { push(vm, make_int(0)); }
+                break;
+            }
             case OP_PRINT: {
                 Value v = pop(vm);
                 value_print(v, 0);

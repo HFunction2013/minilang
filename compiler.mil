@@ -1,8 +1,7 @@
 // Self-hosting compiler for minilang
 // Compiles minilang source to bytecode text format
-// The source is embedded as a string (SELF_SRC)
-
-// ===== Token types =====
+// Feature-complete: lexer, parser (with require module system), bytecode gen
+// ===== Token types (must match C enum ordering for consistency) =====
 var TOK_EOF = 0;
 var TOK_INT = 1;
 var TOK_STRING = 2;
@@ -15,31 +14,34 @@ var TOK_WHILE = 8;
 var TOK_RETURN = 9;
 var TOK_PRINT = 10;
 var TOK_PRINTLN = 11;
-var TOK_PLUS = 12;
-var TOK_MINUS = 13;
-var TOK_STAR = 14;
-var TOK_SLASH = 15;
-var TOK_PERCENT = 16;
-var TOK_EQ = 17;
-var TOK_EQEQ = 18;
-var TOK_NEQ = 19;
-var TOK_LT = 20;
-var TOK_GT = 21;
-var TOK_LTE = 22;
-var TOK_GTE = 23;
-var TOK_AND = 24;
-var TOK_OR = 25;
-var TOK_NOT = 26;
-var TOK_LPAREN = 27;
-var TOK_RPAREN = 28;
-var TOK_LBRACE = 29;
-var TOK_RBRACE = 30;
-var TOK_LBRACKET = 31;
-var TOK_RBRACKET = 32;
-var TOK_COMMA = 33;
-var TOK_SEMICOLON = 34;
-var TOK_BREAK = 35;
-
+var TOK_BREAK = 12;
+var TOK_REQUIRE = 13;
+var TOK_FROM = 14;
+var TOK_IN = 15;
+var TOK_PLUS = 16;
+var TOK_MINUS = 17;
+var TOK_STAR = 18;
+var TOK_SLASH = 19;
+var TOK_PERCENT = 20;
+var TOK_EQ = 21;
+var TOK_EQEQ = 22;
+var TOK_NEQ = 23;
+var TOK_LT = 24;
+var TOK_GT = 25;
+var TOK_LTE = 26;
+var TOK_GTE = 27;
+var TOK_AND = 28;
+var TOK_OR = 29;
+var TOK_NOT = 30;
+var TOK_DOT = 31;
+var TOK_LPAREN = 32;
+var TOK_RPAREN = 33;
+var TOK_LBRACE = 34;
+var TOK_RBRACE = 35;
+var TOK_LBRACKET = 36;
+var TOK_RBRACKET = 37;
+var TOK_COMMA = 38;
+var TOK_SEMICOLON = 39;
 // ===== AST node types =====
 var NODE_INT = 0;
 var NODE_STRING = 1;
@@ -61,8 +63,7 @@ var NODE_BLOCK = 16;
 var NODE_EXPR_STMT = 17;
 var NODE_NIL = 18;
 var NODE_BREAK = 19;
-
-// ===== Opcodes =====
+// ===== Opcodes (must match C OpCode enum exactly) =====
 var OP_CONST = 0;
 var OP_NIL = 1;
 var OP_ADD = 2;
@@ -107,33 +108,31 @@ var OP_MAKE_ARRAY = 40;
 var OP_ARGC = 41;
 var OP_ARGV = 42;
 var OP_READFILE = 43;
-
-// ===== State (passed as array) =====
-// State indices:
-// 0=source, 1=pos, 2=line, 3=tokens, 4=tok_count
+var OP_FILEEXISTS = 44;
+// ===== State layout =====
+// 0=src, 1=pos, 2=line, 3=tokens, 4=tok_count
 // 5=parse_pos, 6=constants, 7=const_count, 8=funcs, 9=func_count
 // 10=bytecode, 11=bc_count, 12=var_names, 13=var_count, 14=cur_func
 // 15=global_names, 16=global_count, 17=global_inits, 18=global_init_count
 // 19=break_positions, 20=break_count, 21=loop_stack, 22=loop_depth
-
+// 23=modules, 24=module_count, 25=alias_names, 26=alias_targets, 27=alias_count
+// 28=script_dir, 29=syslib_dir
 func make_state(src) {
-    var tokens = make_arr(32768);
-    var constants = make_arr(8192);
-    var funcs = make_arr(1024);
-    var bytecode = make_arr(262144);
-    var var_names = make_arr(1024);
-    var global_names = make_arr(1024);
-    var global_inits = make_arr(1024);
-    var break_positions = make_arr(4096);
-    var loop_stack = make_arr(256);
-    var state = [src, 0, 1, tokens, 0, 0, constants, 0, funcs, 0, bytecode, 0, var_names, 0, 0, global_names, 0, global_inits, 0, break_positions, 0, loop_stack, 0];
+    var tokens = array(32768, 0);
+    var constants = array(8192, 0);
+    var funcs = array(1024, 0);
+    var bytecode = array(262144, 0);
+    var var_names = array(1024, 0);
+    var global_names = array(1024, 0);
+    var global_inits = array(1024, 0);
+    var break_positions = array(4096, 0);
+    var loop_stack = array(256, 0);
+    var modules = array(64, 0);
+    var alias_names = array(256, 0);
+    var alias_targets = array(256, 0);
+    var state = [src, 0, 1, tokens, 0, 0, constants, 0, funcs, 0, bytecode, 0, var_names, 0, 0, global_names, 0, global_inits, 0, break_positions, 0, loop_stack, 0, modules, 0, alias_names, alias_targets, 0, ".", "syslib"];
     return state;
 }
-
-func make_arr(n) {
-    return array(n, 0);
-}
-
 func array_push(arr, val) {
     var n = len(arr);
     var new_arr = array(n + 1, 0);
@@ -145,25 +144,61 @@ func array_push(arr, val) {
     new_arr[n] = val;
     return new_arr;
 }
-
+// ===== String helpers =====
+func str_contains_dot(s) {
+    var i = 0;
+    while (i < len(s)) {
+        if (charAt(s, i) == 46) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+func str_starts_with(s, prefix) {
+    var pl = len(prefix);
+    if (pl > len(s)) { return 0; }
+    return strcmp(substr(s, 0, pl), prefix) == 0;
+}
+func is_builtin_name(name) {
+    if (strcmp(name, "len") == 0) { return 1; }
+    if (strcmp(name, "charAt") == 0) { return 1; }
+    if (strcmp(name, "substr") == 0) { return 1; }
+    if (strcmp(name, "toString") == 0) { return 1; }
+    if (strcmp(name, "toInt") == 0) { return 1; }
+    if (strcmp(name, "strcmp") == 0) { return 1; }
+    if (strcmp(name, "readAll") == 0) { return 1; }
+    if (strcmp(name, "array") == 0) { return 1; }
+    if (strcmp(name, "print") == 0) { return 1; }
+    if (strcmp(name, "println") == 0) { return 1; }
+    if (strcmp(name, "argc") == 0) { return 1; }
+    if (strcmp(name, "argv") == 0) { return 1; }
+    if (strcmp(name, "readFile") == 0) { return 1; }
+    if (strcmp(name, "fileExists") == 0) { return 1; }
+    return 0;
+}
+func dirname(path) {
+    var i = len(path) - 1;
+    while (i >= 0) {
+        if (charAt(path, i) == 47) {
+            if (i == 0) { return "/"; }
+            return substr(path, 0, i);
+        }
+        i = i - 1;
+    }
+    return ".";
+}
 // ===== Lexer =====
-
 func is_digit(c) {
     return c >= 48 && c <= 57;
 }
-
 func is_alpha(c) {
     return (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95;
 }
-
 func is_alnum(c) {
     return is_alpha(c) || is_digit(c);
 }
-
 func is_space(c) {
     return c == 32 || c == 9 || c == 13 || c == 10;
 }
-
 func keyword_type(word) {
     if (strcmp(word, "var") == 0) { return TOK_VAR; }
     if (strcmp(word, "func") == 0) { return TOK_FUNC; }
@@ -174,144 +209,18 @@ func keyword_type(word) {
     if (strcmp(word, "print") == 0) { return TOK_PRINT; }
     if (strcmp(word, "println") == 0) { return TOK_PRINTLN; }
     if (strcmp(word, "break") == 0) { return TOK_BREAK; }
+    if (strcmp(word, "require") == 0) { return TOK_REQUIRE; }
+    if (strcmp(word, "from") == 0) { return TOK_FROM; }
+    if (strcmp(word, "in") == 0) { return TOK_IN; }
     return TOK_IDENT;
 }
-
 func add_token(state, typ, intval, strval) {
     var tok = [typ, intval, strval];
     var tc = state[4];
     state[3][tc] = tok;
     state[4] = tc + 1;
 }
-
-func lex_source(state) {
-    var src = state[0];
-    var srclen = len(src);
-    while (state[1] < srclen) {
-        var c = charAt(src, state[1]);
-        // Skip whitespace and comments
-        while (state[1] < srclen) {
-            c = charAt(src, state[1]);
-            if (is_space(c)) {
-                if (c == 10) { state[2] = state[2] + 1; }
-                state[1] = state[1] + 1;
-            } else if (c == 47 && state[1] + 1 < srclen && charAt(src, state[1] + 1) == 47) {
-                while (state[1] < srclen && charAt(src, state[1]) != 10) {
-                    state[1] = state[1] + 1;
-                }
-            } else if (c == 47 && state[1] + 1 < srclen && charAt(src, state[1] + 1) == 42) {
-                state[1] = state[1] + 2;
-                while (state[1] < srclen && !(charAt(src, state[1]) == 42 && state[1] + 1 < srclen && charAt(src, state[1] + 1) == 47)) {
-                    if (charAt(src, state[1]) == 10) { state[2] = state[2] + 1; }
-                    state[1] = state[1] + 1;
-                }
-                if (state[1] < srclen) { state[1] = state[1] + 2; }
-            } else {
-                break;
-            }
-        }
-        if (state[1] >= srclen) { break; }
-        c = charAt(src, state[1]);
-
-        if (is_digit(c)) {
-            var start = state[1];
-            while (state[1] < srclen && is_digit(charAt(src, state[1]))) {
-                state[1] = state[1] + 1;
-            }
-            var numstr = substr(src, start, state[1] - start);
-            var val = toInt(numstr);
-            add_token(state, TOK_INT, val, "");
-        } else if (c == 34) { // "
-            state[1] = state[1] + 1;
-            var sstart = state[1];
-            var str = "";
-            while (state[1] < srclen && charAt(src, state[1]) != 34) {
-                var ch = charAt(src, state[1]);
-                if (ch == 92 && state[1] + 1 < srclen) { // backslash
-                    state[1] = state[1] + 1;
-                    var esc = charAt(src, state[1]);
-                    if (esc == 110) { str = str + "\n"; }
-                    else if (esc == 116) { str = str + "\t"; }
-                    else if (esc == 92) { str = str + "\\"; }
-                    else if (esc == 34) { str = str + "\""; }
-                    else { str = str + char_to_str(esc); }
-                } else {
-                    str = str + char_to_str(ch);
-                }
-                state[1] = state[1] + 1;
-            }
-            if (state[1] < srclen) { state[1] = state[1] + 1; }
-            add_token(state, TOK_STRING, 0, str);
-        } else if (is_alpha(c)) {
-            var wstart = state[1];
-            while (state[1] < srclen && is_alnum(charAt(src, state[1]))) {
-                state[1] = state[1] + 1;
-            }
-            var word = substr(src, wstart, state[1] - wstart);
-            var kt = keyword_type(word);
-            add_token(state, kt, 0, word);
-        } else {
-            state[1] = state[1] + 1;
-            if (c == 43) { add_token(state, TOK_PLUS, 0, ""); }
-            else if (c == 45) { add_token(state, TOK_MINUS, 0, ""); }
-            else if (c == 42) { add_token(state, TOK_STAR, 0, ""); }
-            else if (c == 47) { add_token(state, TOK_SLASH, 0, ""); }
-            else if (c == 37) { add_token(state, TOK_PERCENT, 0, ""); }
-            else if (c == 40) { add_token(state, TOK_LPAREN, 0, ""); }
-            else if (c == 41) { add_token(state, TOK_RPAREN, 0, ""); }
-            else if (c == 123) { add_token(state, TOK_LBRACE, 0, ""); }
-            else if (c == 125) { add_token(state, TOK_RBRACE, 0, ""); }
-            else if (c == 91) { add_token(state, TOK_LBRACKET, 0, ""); }
-            else if (c == 93) { add_token(state, TOK_RBRACKET, 0, ""); }
-            else if (c == 44) { add_token(state, TOK_COMMA, 0, ""); }
-            else if (c == 59) { add_token(state, TOK_SEMICOLON, 0, ""); }
-            else if (c == 61) {
-                if (state[1] < srclen && charAt(src, state[1]) == 61) {
-                    state[1] = state[1] + 1;
-                    add_token(state, TOK_EQEQ, 0, "");
-                } else { add_token(state, TOK_EQ, 0, ""); }
-            }
-            else if (c == 33) {
-                if (state[1] < srclen && charAt(src, state[1]) == 61) {
-                    state[1] = state[1] + 1;
-                    add_token(state, TOK_NEQ, 0, "");
-                } else { add_token(state, TOK_NOT, 0, ""); }
-            }
-            else if (c == 60) {
-                if (state[1] < srclen && charAt(src, state[1]) == 61) {
-                    state[1] = state[1] + 1;
-                    add_token(state, TOK_LTE, 0, "");
-                } else { add_token(state, TOK_LT, 0, ""); }
-            }
-            else if (c == 62) {
-                if (state[1] < srclen && charAt(src, state[1]) == 61) {
-                    state[1] = state[1] + 1;
-                    add_token(state, TOK_GTE, 0, "");
-                } else { add_token(state, TOK_GT, 0, ""); }
-            }
-            else if (c == 38) {
-                if (state[1] < srclen && charAt(src, state[1]) == 38) {
-                    state[1] = state[1] + 1;
-                    add_token(state, TOK_AND, 0, "");
-                }
-            }
-            else if (c == 124) {
-                if (state[1] < srclen && charAt(src, state[1]) == 124) {
-                    state[1] = state[1] + 1;
-                    add_token(state, TOK_OR, 0, "");
-                }
-            }
-        }
-    }
-    add_token(state, TOK_EOF, 0, "");
-}
-
 func char_to_str(c) {
-    // Convert a char code to a single-char string
-    var s = " ";
-    // We can't easily set a char in a string, so use substr trick
-    // Actually, just build from known chars
-    // This is a limitation - we'll handle common chars
     if (c == 32) { return " "; }
     if (c == 33) { return "!"; }
     if (c == 34) { return "\""; }
@@ -361,36 +270,152 @@ func char_to_str(c) {
     if (c == 9) { return "\t"; }
     return " ";
 }
-
+func lex_source(state) {
+    var src = state[0];
+    var srclen = len(src);
+    while (state[1] < srclen) {
+        // Skip whitespace and comments
+        while (state[1] < srclen) {
+            var c = charAt(src, state[1]);
+            if (is_space(c)) {
+                if (c == 10) { state[2] = state[2] + 1; }
+                state[1] = state[1] + 1;
+            } else if (c == 47 && state[1] + 1 < srclen && charAt(src, state[1] + 1) == 47) {
+                while (state[1] < srclen && charAt(src, state[1]) != 10) {
+                    state[1] = state[1] + 1;
+                }
+            } else if (c == 47 && state[1] + 1 < srclen && charAt(src, state[1] + 1) == 42) {
+                state[1] = state[1] + 2;
+                while (state[1] < srclen && !(charAt(src, state[1]) == 42 && state[1] + 1 < srclen && charAt(src, state[1] + 1) == 47)) {
+                    if (charAt(src, state[1]) == 10) { state[2] = state[2] + 1; }
+                    state[1] = state[1] + 1;
+                }
+                if (state[1] < srclen) { state[1] = state[1] + 2; }
+            } else {
+                break;
+            }
+        }
+        if (state[1] >= srclen) { break; }
+        var c = charAt(src, state[1]);
+        if (is_digit(c)) {
+            var start = state[1];
+            while (state[1] < srclen && is_digit(charAt(src, state[1]))) {
+                state[1] = state[1] + 1;
+            }
+            var numstr = substr(src, start, state[1] - start);
+            var val = toInt(numstr);
+            add_token(state, TOK_INT, val, "");
+        } else if (c == 34) { // "
+            state[1] = state[1] + 1;
+            var str = "";
+            while (state[1] < srclen && charAt(src, state[1]) != 34) {
+                var ch = charAt(src, state[1]);
+                if (ch == 92 && state[1] + 1 < srclen) { // backslash
+                    state[1] = state[1] + 1;
+                    var esc = charAt(src, state[1]);
+                    if (esc == 110) { str = str + "\n"; }
+                    else if (esc == 116) { str = str + "\t"; }
+                    else if (esc == 92) { str = str + "\\"; }
+                    else if (esc == 34) { str = str + "\""; }
+                    else if (esc == 48) { str = str + char_to_str(0); }
+                    else { str = str + char_to_str(esc); }
+                } else {
+                    str = str + char_to_str(ch);
+                }
+                state[1] = state[1] + 1;
+            }
+            if (state[1] < srclen) { state[1] = state[1] + 1; }
+            add_token(state, TOK_STRING, 0, str);
+        } else if (is_alpha(c)) {
+            var wstart = state[1];
+            while (state[1] < srclen && is_alnum(charAt(src, state[1]))) {
+                state[1] = state[1] + 1;
+            }
+            var word = substr(src, wstart, state[1] - wstart);
+            var kt = keyword_type(word);
+            add_token(state, kt, 0, word);
+        } else {
+            state[1] = state[1] + 1;
+            if (c == 43) { add_token(state, TOK_PLUS, 0, ""); }
+            else if (c == 45) { add_token(state, TOK_MINUS, 0, ""); }
+            else if (c == 42) { add_token(state, TOK_STAR, 0, ""); }
+            else if (c == 47) { add_token(state, TOK_SLASH, 0, ""); }
+            else if (c == 37) { add_token(state, TOK_PERCENT, 0, ""); }
+            else if (c == 40) { add_token(state, TOK_LPAREN, 0, ""); }
+            else if (c == 41) { add_token(state, TOK_RPAREN, 0, ""); }
+            else if (c == 123) { add_token(state, TOK_LBRACE, 0, ""); }
+            else if (c == 125) { add_token(state, TOK_RBRACE, 0, ""); }
+            else if (c == 91) { add_token(state, TOK_LBRACKET, 0, ""); }
+            else if (c == 93) { add_token(state, TOK_RBRACKET, 0, ""); }
+            else if (c == 44) { add_token(state, TOK_COMMA, 0, ""); }
+            else if (c == 59) { add_token(state, TOK_SEMICOLON, 0, ""); }
+            else if (c == 46) { add_token(state, TOK_DOT, 0, ""); }
+            else if (c == 61) {
+                if (state[1] < srclen && charAt(src, state[1]) == 61) {
+                    state[1] = state[1] + 1;
+                    add_token(state, TOK_EQEQ, 0, "");
+                } else { add_token(state, TOK_EQ, 0, ""); }
+            }
+            else if (c == 33) {
+                if (state[1] < srclen && charAt(src, state[1]) == 61) {
+                    state[1] = state[1] + 1;
+                    add_token(state, TOK_NEQ, 0, "");
+                } else { add_token(state, TOK_NOT, 0, ""); }
+            }
+            else if (c == 60) {
+                if (state[1] < srclen && charAt(src, state[1]) == 61) {
+                    state[1] = state[1] + 1;
+                    add_token(state, TOK_LTE, 0, "");
+                } else { add_token(state, TOK_LT, 0, ""); }
+            }
+            else if (c == 62) {
+                if (state[1] < srclen && charAt(src, state[1]) == 61) {
+                    state[1] = state[1] + 1;
+                    add_token(state, TOK_GTE, 0, "");
+                } else { add_token(state, TOK_GT, 0, ""); }
+            }
+            else if (c == 38) {
+                if (state[1] < srclen && charAt(src, state[1]) == 38) {
+                    state[1] = state[1] + 1;
+                    add_token(state, TOK_AND, 0, "");
+                } else {
+                    println "Lexer error: unexpected '&'";
+                }
+            }
+            else if (c == 124) {
+                if (state[1] < srclen && charAt(src, state[1]) == 124) {
+                    state[1] = state[1] + 1;
+                    add_token(state, TOK_OR, 0, "");
+                } else {
+                    println "Lexer error: unexpected '|'";
+                }
+            }
+        }
+    }
+    add_token(state, TOK_EOF, 0, "");
+}
 // ===== Parser =====
-
 func cur_tok(state) {
     return state[3][state[5]];
 }
-
 func tok_type(state) {
     return cur_tok(state)[0];
 }
-
 func tok_int(state) {
     return cur_tok(state)[1];
 }
-
 func tok_str(state) {
     return cur_tok(state)[2];
 }
-
 func advance_tok(state) {
     state[5] = state[5] + 1;
 }
-
 func check_tok(state, typ) {
     return tok_type(state) == typ;
 }
-
 func expect_tok(state, typ, msg) {
     if (tok_type(state) != typ) {
-        println "Parse error: ";
+        print "Parse error: expected ";
         println msg;
         return 0;
     }
@@ -398,7 +423,9 @@ func expect_tok(state, typ, msg) {
     advance_tok(state);
     return t;
 }
-
+func peek_tok_type(state, offset) {
+    return state[3][state[5] + offset][0];
+}
 func parse_primary(state) {
     var t = cur_tok(state);
     var typ = t[0];
@@ -443,6 +470,52 @@ func parse_primary(state) {
     }
     if (typ == TOK_IDENT) {
         advance_tok(state);
+        // Namespace access: module.func(...)
+        if (tok_type(state) == TOK_DOT) {
+            var module_name = t[2];
+            advance_tok(state); // consume '.'
+            var member_tok = expect_tok(state, TOK_IDENT, "function name after '.'");
+            // Check module is loaded
+            var mod_found = 0;
+            var mi = 0;
+            while (mi < state[24]) {
+                if (strcmp(state[23][mi][0], module_name) == 0) { mod_found = 1; }
+                mi = mi + 1;
+            }
+            if (mod_found == 0) {
+                print "Parse error: unknown module '";
+                print module_name;
+                println "'";
+            }
+            // Build full name "module.func"
+            var full_name = module_name + "." + member_tok[2];
+            if (tok_type(state) == TOK_LPAREN) {
+                advance_tok(state);
+                var args = [0];
+                var argc = 0;
+                var afirst = 1;
+                if (tok_type(state) != TOK_RPAREN) {
+                    while (1) {
+                        var a = parse_expr(state);
+                        if (afirst) {
+                            args = [a];
+                            afirst = 0;
+                        } else {
+                            args = array_push(args, a);
+                        }
+                        argc = argc + 1;
+                        if (tok_type(state) == TOK_COMMA) {
+                            advance_tok(state);
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                expect_tok(state, TOK_RPAREN, "')'");
+                return [NODE_CALL, full_name, argc, args];
+            }
+            return [NODE_VAR, full_name];
+        }
         if (tok_type(state) == TOK_LPAREN) {
             advance_tok(state);
             var args = [0];
@@ -473,7 +546,6 @@ func parse_primary(state) {
     println "Parse error: unexpected token";
     return [NODE_NIL];
 }
-
 func parse_postfix(state) {
     var left = parse_primary(state);
     while (tok_type(state) == TOK_LBRACKET) {
@@ -484,7 +556,6 @@ func parse_postfix(state) {
     }
     return left;
 }
-
 func parse_unary(state) {
     if (tok_type(state) == TOK_MINUS || tok_type(state) == TOK_NOT) {
         var op = tok_type(state);
@@ -494,7 +565,6 @@ func parse_unary(state) {
     }
     return parse_postfix(state);
 }
-
 func parse_mul(state) {
     var left = parse_unary(state);
     while (tok_type(state) == TOK_STAR || tok_type(state) == TOK_SLASH || tok_type(state) == TOK_PERCENT) {
@@ -505,7 +575,6 @@ func parse_mul(state) {
     }
     return left;
 }
-
 func parse_add(state) {
     var left = parse_mul(state);
     while (tok_type(state) == TOK_PLUS || tok_type(state) == TOK_MINUS) {
@@ -516,7 +585,6 @@ func parse_add(state) {
     }
     return left;
 }
-
 func parse_comparison(state) {
     var left = parse_add(state);
     while (tok_type(state) == TOK_LT || tok_type(state) == TOK_GT || tok_type(state) == TOK_LTE || tok_type(state) == TOK_GTE) {
@@ -527,7 +595,6 @@ func parse_comparison(state) {
     }
     return left;
 }
-
 func parse_equality(state) {
     var left = parse_comparison(state);
     while (tok_type(state) == TOK_EQEQ || tok_type(state) == TOK_NEQ) {
@@ -538,7 +605,6 @@ func parse_equality(state) {
     }
     return left;
 }
-
 func parse_and(state) {
     var left = parse_equality(state);
     while (tok_type(state) == TOK_AND) {
@@ -548,7 +614,6 @@ func parse_and(state) {
     }
     return left;
 }
-
 func parse_or(state) {
     var left = parse_and(state);
     while (tok_type(state) == TOK_OR) {
@@ -558,11 +623,9 @@ func parse_or(state) {
     }
     return left;
 }
-
 func parse_expr(state) {
     return parse_or(state);
 }
-
 func parse_block(state) {
     expect_tok(state, TOK_LBRACE, "'{'");
     var stmts = [0];
@@ -581,7 +644,6 @@ func parse_block(state) {
     expect_tok(state, TOK_RBRACE, "'}'");
     return [NODE_BLOCK, count, stmts];
 }
-
 func parse_stmt(state) {
     var typ = tok_type(state);
     if (typ == TOK_VAR) {
@@ -644,8 +706,7 @@ func parse_stmt(state) {
     }
     // Assignment detection
     if (typ == TOK_IDENT) {
-        var next_tok = state[3][state[5] + 1];
-        if (next_tok[0] == TOK_EQ) {
+        if (peek_tok_type(state, 1) == TOK_EQ) {
             var name_tok = cur_tok(state);
             advance_tok(state);
             advance_tok(state); // '='
@@ -653,7 +714,7 @@ func parse_stmt(state) {
             expect_tok(state, TOK_SEMICOLON, "';'");
             return [NODE_ASSIGN, name_tok[2], val];
         }
-        if (next_tok[0] == TOK_LBRACKET) {
+        if (peek_tok_type(state, 1) == TOK_LBRACKET) {
             var left = parse_postfix(state);
             if (left[0] == NODE_INDEX && tok_type(state) == TOK_EQ) {
                 advance_tok(state);
@@ -661,7 +722,7 @@ func parse_stmt(state) {
                 expect_tok(state, TOK_SEMICOLON, "';'");
                 return [NODE_INDEX_ASSIGN, left[1], left[2], val];
             }
-            // Expression statement
+            // Expression statement starting with index access
             expect_tok(state, TOK_SEMICOLON, "';'");
             return [NODE_EXPR_STMT, left];
         }
@@ -671,7 +732,6 @@ func parse_stmt(state) {
     expect_tok(state, TOK_SEMICOLON, "';'");
     return [NODE_EXPR_STMT, e];
 }
-
 func parse_func(state) {
     expect_tok(state, TOK_FUNC, "'func'");
     var name_tok = expect_tok(state, TOK_IDENT, "function name");
@@ -700,41 +760,267 @@ func parse_func(state) {
     var body = parse_block(state);
     return [NODE_FUNC, name_tok[2], pcount, params, body];
 }
-
+// ===== Module system =====
+func module_already_loaded(state, module_name) {
+    var i = 0;
+    while (i < state[24]) {
+        if (strcmp(state[23][i][0], module_name) == 0) { return 1; }
+        i = i + 1;
+    }
+    return 0;
+}
+func add_alias(state, name, target) {
+    // Check for duplicate
+    var i = 0;
+    while (i < state[27]) {
+        if (strcmp(state[25][i], name) == 0) { return 0; }
+        i = i + 1;
+    }
+    var idx = state[27];
+    state[25][idx] = name;
+    state[26][idx] = target;
+    state[27] = idx + 1;
+    return 1;
+}
+// Recursively rename NODE_CALL names inside a module's AST
+func rename_module_refs(node, prefix) {
+    var typ = node[0];
+    if (typ == NODE_FUNC) {
+        rename_module_refs(node[4], prefix);
+    } else if (typ == NODE_VAR_DECL) {
+        rename_module_refs(node[2], prefix);
+    } else if (typ == NODE_ASSIGN) {
+        rename_module_refs(node[2], prefix);
+    } else if (typ == NODE_BINARY) {
+        rename_module_refs(node[2], prefix);
+        rename_module_refs(node[3], prefix);
+    } else if (typ == NODE_UNARY) {
+        rename_module_refs(node[2], prefix);
+    } else if (typ == NODE_IF) {
+        rename_module_refs(node[1], prefix);
+        rename_module_refs(node[2], prefix);
+        rename_module_refs(node[3], prefix);
+    } else if (typ == NODE_WHILE) {
+        rename_module_refs(node[1], prefix);
+        rename_module_refs(node[2], prefix);
+    } else if (typ == NODE_RETURN) {
+        rename_module_refs(node[1], prefix);
+    } else if (typ == NODE_CALL) {
+        var cname = node[1];
+        if (str_contains_dot(cname) == 0) {
+            if (is_builtin_name(cname) == 0) {
+                node[1] = prefix + cname;
+            }
+        }
+        var i = 0;
+        while (i < node[2]) {
+            rename_module_refs(node[3][i], prefix);
+            i = i + 1;
+        }
+    } else if (typ == NODE_INDEX) {
+        rename_module_refs(node[1], prefix);
+        rename_module_refs(node[2], prefix);
+    } else if (typ == NODE_INDEX_ASSIGN) {
+        rename_module_refs(node[1], prefix);
+        rename_module_refs(node[2], prefix);
+        rename_module_refs(node[3], prefix);
+    } else if (typ == NODE_PRINT) {
+        rename_module_refs(node[1], prefix);
+    } else if (typ == NODE_BLOCK) {
+        var i = 0;
+        while (i < node[1]) {
+            rename_module_refs(node[2][i], prefix);
+            i = i + 1;
+        }
+    } else if (typ == NODE_EXPR_STMT) {
+        rename_module_refs(node[1], prefix);
+    } else if (typ == NODE_ARRAY_LIT) {
+        var i = 0;
+        while (i < node[1]) {
+            rename_module_refs(node[2][i], prefix);
+            i = i + 1;
+        }
+    }
+}
+func load_module(state, module_name, search_mode) {
+    // Build candidate paths
+    var path = "";
+    var found = 0;
+    if (search_mode == 1) {
+        // syslib only
+        path = state[29] + "/" + module_name + ".mil";
+        if (fileExists(path) == 1) { found = 1; }
+    } else if (search_mode == 2) {
+        // cwd only
+        path = "./" + module_name + ".mil";
+        if (fileExists(path) == 1) { found = 1; }
+    } else {
+        // default: script_dir first, then syslib
+        path = state[28] + "/" + module_name + ".mil";
+        if (fileExists(path) == 1) { found = 1; }
+        if (found == 0) {
+            path = state[29] + "/" + module_name + ".mil";
+            if (fileExists(path) == 1) { found = 1; }
+        }
+    }
+    if (found == 0) {
+        print "Parse error: cannot find module '";
+        print module_name;
+        println "'";
+        return;
+    }
+    var src = readFile(path);
+    // Create sub-state for module parsing
+    var sub = make_state(src);
+    sub[28] = state[28];
+    sub[29] = state[29];
+    lex_source(sub);
+    parse_program(sub);
+    // Build prefix
+    var prefix = module_name + ".";
+    // Rename module functions
+    var i = 0;
+    while (i < sub[9]) {
+        var f = sub[8][i];
+        if (str_contains_dot(f[1]) == 1) {
+            // Already qualified (nested require): keep name, rename refs in body
+            rename_module_refs(f[4], prefix);
+        } else {
+            f[1] = prefix + f[1];
+            rename_module_refs(f[4], prefix);
+        }
+        i = i + 1;
+    }
+    // Merge functions into main state
+    i = 0;
+    while (i < sub[9]) {
+        var fidx = state[9];
+        state[8][fidx] = sub[8][i];
+        state[9] = fidx + 1;
+        i = i + 1;
+    }
+    // Merge globals into main state
+    i = 0;
+    while (i < sub[18]) {
+        var gidx = state[18];
+        state[15][gidx] = sub[15][i];
+        state[17][gidx] = sub[17][i];
+        state[16] = gidx + 1;
+        state[18] = gidx + 1;
+        i = i + 1;
+    }
+    // Record module info with exports
+    var midx = state[24];
+    var exports = array(256, 0);
+    var export_count = 0;
+    var j = 0;
+    while (j < state[9]) {
+        var fn = state[8][j][1];
+        if (str_starts_with(fn, prefix)) {
+            exports[export_count] = fn;
+            export_count = export_count + 1;
+        }
+        j = j + 1;
+    }
+    state[23][midx] = [module_name, exports, export_count];
+    state[24] = midx + 1;
+}
+func parse_require(state) {
+    advance_tok(state); // consume 'require'
+    // Collect imported names (if any)
+    var names = array(64, 0);
+    var ncount = 0;
+    var module_name = "";
+    if (tok_type(state) == TOK_IDENT && (peek_tok_type(state, 1) == TOK_FROM || peek_tok_type(state, 1) == TOK_COMMA)) {
+        // require x from A; or require x, y from A;
+        while (1) {
+            var nm = expect_tok(state, TOK_IDENT, "identifier");
+            names[ncount] = nm[2];
+            ncount = ncount + 1;
+            if (tok_type(state) == TOK_COMMA) {
+                advance_tok(state);
+            } else {
+                break;
+            }
+        }
+        expect_tok(state, TOK_FROM, "'from'");
+        var mod = expect_tok(state, TOK_IDENT, "module name");
+        module_name = mod[2];
+    } else {
+        // require A;
+        var mod = expect_tok(state, TOK_IDENT, "module name");
+        module_name = mod[2];
+    }
+    var search_mode = 0; // 0=default, 1=syslib only, 2=cwd only
+    if (tok_type(state) == TOK_IN) {
+        advance_tok(state);
+        var loc = expect_tok(state, TOK_IDENT, "'syslib' or 'cwd'");
+        if (strcmp(loc[2], "syslib") == 0) { search_mode = 1; }
+        else if (strcmp(loc[2], "cwd") == 0) { search_mode = 2; }
+    }
+    expect_tok(state, TOK_SEMICOLON, "';'");
+    // Load module if not already loaded
+    if (module_already_loaded(state, module_name) == 0) {
+        load_module(state, module_name, search_mode);
+    }
+    // Create aliases for selective imports
+    if (ncount > 0) {
+        var i = 0;
+        while (i < ncount) {
+            var target = module_name + "." + names[i];
+            // Verify function exists in module exports
+            var found = 0;
+            var m = 0;
+            while (m < state[24]) {
+                if (strcmp(state[23][m][0], module_name) == 0) {
+                    var e = 0;
+                    while (e < state[23][m][2]) {
+                        if (strcmp(state[23][m][1][e], target) == 0) { found = 1; }
+                        e = e + 1;
+                    }
+                }
+                m = m + 1;
+            }
+            if (found == 0) {
+                print "Parse error: module '";
+                print module_name;
+                print "' has no exported function '";
+                print names[i];
+                println "'";
+            }
+            add_alias(state, names[i], target);
+            i = i + 1;
+        }
+    }
+}
 func parse_program(state) {
-    var funcs = [0];
-    var fcount = 0;
-    var ffirst = 1;
     while (tok_type(state) != TOK_EOF) {
-        if (tok_type(state) == TOK_VAR) {
+        if (tok_type(state) == TOK_REQUIRE) {
+            parse_require(state);
+        } else if (tok_type(state) == TOK_FUNC) {
+            var f = parse_func(state);
+            var fidx = state[9];
+            state[8][fidx] = f;
+            state[9] = fidx + 1;
+        } else if (tok_type(state) == TOK_VAR) {
             // Top-level global variable declaration
             advance_tok(state);
             var gname_tok = expect_tok(state, TOK_IDENT, "identifier");
             expect_tok(state, TOK_EQ, "'='");
             var gval = parse_expr(state);
             expect_tok(state, TOK_SEMICOLON, "';'");
-            // Register global name
-            var gidx = state[16];
+            var gidx = state[18];
             state[15][gidx] = gname_tok[2];
             state[17][gidx] = gval;
             state[16] = gidx + 1;
             state[18] = gidx + 1;
         } else {
-            var f = parse_func(state);
-            if (ffirst) {
-                funcs = [f];
-                ffirst = 0;
-            } else {
-                funcs = array_push(funcs, f);
-            }
-            fcount = fcount + 1;
+            println "Parse error: expected 'func', 'var', or 'require' at top level";
+            advance_tok(state);
         }
     }
-    return [fcount, funcs];
 }
-
 // ===== Bytecode Generator =====
-
 func find_var(state, name) {
     var i = 0;
     while (i < state[13]) {
@@ -745,7 +1031,6 @@ func find_var(state, name) {
     }
     return -1;
 }
-
 func find_global(state, name) {
     var i = 0;
     while (i < state[16]) {
@@ -756,7 +1041,6 @@ func find_global(state, name) {
     }
     return -1;
 }
-
 func add_var(state, name) {
     var existing = find_var(state, name);
     if (existing >= 0) { return existing; }
@@ -765,21 +1049,19 @@ func add_var(state, name) {
     state[13] = idx + 1;
     return idx;
 }
-
 func find_func(state, name) {
     var i = 0;
     while (i < state[9]) {
-        if (strcmp(state[8][i][0], name) == 0) {
+        if (strcmp(state[8][i][1], name) == 0) {
             return i;
         }
         i = i + 1;
     }
     return -1;
 }
-
 func add_const(state, typ, val) {
     // typ: 0=int, 1=string
-    // Check for duplicate
+    // Check for duplicate (matching C deduplication)
     var i = 0;
     while (i < state[7]) {
         var c = state[6][i];
@@ -801,7 +1083,6 @@ func add_const(state, typ, val) {
     state[7] = idx + 1;
     return idx;
 }
-
 func emit(state, op, op1, op2) {
     var idx = state[11];
     state[10][idx] = op;
@@ -809,15 +1090,12 @@ func emit(state, op, op1, op2) {
     state[10][idx + 2] = op2;
     state[11] = idx + 3;
 }
-
 func bc_count(state) {
     return state[11] / 3;
 }
-
 func patch_jmp(state, pos, target) {
     state[10][pos + 1] = target;
 }
-
 func compile_stmt(state, node) {
     var typ = node[0];
     if (typ == NODE_VAR_DECL) {
@@ -906,7 +1184,6 @@ func compile_stmt(state, node) {
         emit(state, OP_POP, 0, 0);
     }
 }
-
 func compile_expr(state, node) {
     var typ = node[0];
     if (typ == NODE_INT) {
@@ -989,8 +1266,18 @@ func compile_expr(state, node) {
         } else if (strcmp(name, "readFile") == 0) {
             compile_expr(state, node[3][0]);
             emit(state, OP_READFILE, 0, 0);
+        } else if (strcmp(name, "fileExists") == 0) {
+            compile_expr(state, node[3][0]);
+            emit(state, OP_FILEEXISTS, 0, 0);
         } else {
-            var fi = find_func(state, name);
+            // Resolve alias
+            var cname = name;
+            var ai = 0;
+            while (ai < state[27]) {
+                if (strcmp(state[25][ai], cname) == 0) { cname = state[26][ai]; }
+                ai = ai + 1;
+            }
+            var fi = find_func(state, cname);
             var i = 0;
             while (i < node[2]) {
                 compile_expr(state, node[3][i]);
@@ -1006,56 +1293,56 @@ func compile_expr(state, node) {
         emit(state, OP_NIL, 0, 0);
     }
 }
-
-func compile_program(state, prog) {
-    var fcount = prog[0];
-    var funcs = prog[1];
-    // First pass: register functions
+func compile_program(state) {
+    var fcount = state[9];
+    // First pass: register all functions (matching C: program_add_func)
     var i = 0;
     while (i < fcount) {
-        var f = funcs[i];
-        state[8][i] = [f[1], 0, f[2], 0]; // name, address, params, locals
+        var f = state[8][i];
+        // func_info stored as [name, address, params, locals] - use separate arrays
+        // We store func info directly by reusing state[8] entries and adding address/locals
+        // Actually C stores FuncInfo separately. We'll compute address during second pass.
+        // For find_func we use state[8][i][1] (name). We need address and locals too.
+        // Let's store func info in a parallel structure: state[8][i] is the AST func node.
+        // We'll add address at state[8][i] + extra fields? No, node is fixed size.
+        // Use state fields: we'll store addresses in a separate array.
         i = i + 1;
     }
-    state[9] = fcount;
-
     // Find main
     var main_idx = find_func(state, "main");
-
     // Emit jump to init section (will be patched)
     var jmp_init_pos = state[11];
     emit(state, OP_JMP, 0, 0);
-
     // Second pass: compile each function
+    // Store func addresses and local counts in parallel arrays
+    var func_addrs = array(1024, 0);
+    var func_locals = array(1024, 0);
+    var func_params = array(1024, 0);
+    var func_names = array(1024, 0);
     i = 0;
     while (i < fcount) {
-        var f = funcs[i];
-        state[12] = make_arr(256);
+        var f = state[8][i];
+        func_names[i] = f[1];
+        func_params[i] = f[2];
+        state[12] = array(256, 0);
         state[13] = 0;
         state[14] = i;
-
-        state[8][i][1] = bc_count(state); // address
-
+        func_addrs[i] = bc_count(state);
         // Parameters as locals
         var j = 0;
         while (j < f[2]) {
             add_var(state, f[3][j]);
             j = j + 1;
         }
-
         compile_stmt(state, f[4]);
-
-        // Implicit return
+        // Implicit return (matching C: OP_NIL + OP_RET)
         emit(state, OP_NIL, 0, 0);
         emit(state, OP_RET, 0, 0);
-
-        state[8][i][3] = state[13]; // local count
+        func_locals[i] = state[13];
         i = i + 1;
     }
-
     // Global initialization section
-    // Reset local variable table for global init expressions
-    state[12] = make_arr(256);
+    state[12] = array(256, 0);
     state[13] = 0;
     var init_addr = bc_count(state);
     patch_jmp(state, jmp_init_pos, init_addr);
@@ -1065,62 +1352,60 @@ func compile_program(state, prog) {
         emit(state, OP_STORE_GLOBAL, gi, 0);
         gi = gi + 1;
     }
-
     // Entry: call main, halt
     emit(state, OP_CALL, main_idx, 0);
     emit(state, OP_HALT, 0, 0);
+    // Store func info for output
+    state[8] = [func_names, func_addrs, func_params, func_locals, fcount];
 }
-
-// ===== Output =====
-
+// ===== Output (matching C dump_bytecode_text exactly) =====
+func escape_string(s) {
+    var r = "";
+    var i = 0;
+    while (i < len(s)) {
+        var c = charAt(s, i);
+        if (c == 92) { r = r + "\\\\"; }
+        else if (c == 10) { r = r + "\\n"; }
+        else if (c == 9) { r = r + "\\t"; }
+        else if (c == 13) { r = r + "\\r"; }
+        else { r = r + char_to_str(c); }
+        i = i + 1;
+    }
+    return r;
+}
 func output_bytecode(state) {
-    println "MINILANGBC";
+    var result = "MINILANGBC\n";
     // Constants
-    println toString(state[7]);
+    result = result + toString(state[7]) + "\n";
     var i = 0;
     while (i < state[7]) {
         var c = state[6][i];
         if (c[0] == 0) {
-            print "0 ";
-            println toString(c[1]);
+            result = result + "0 " + toString(c[1]) + "\n";
         } else {
-            print "1 ";
-            println c[2];
+            result = result + "1 " + escape_string(c[2]) + "\n";
         }
         i = i + 1;
     }
     // Functions
-    println toString(state[9]);
+    var fcount = state[8][4];
+    result = result + toString(fcount) + "\n";
     i = 0;
-    while (i < state[9]) {
-        var f = state[8][i];
-        print f[0];
-        print " ";
-        print toString(f[1]);
-        print " ";
-        print toString(f[2]);
-        print " ";
-        println toString(f[3]);
+    while (i < fcount) {
+        result = result + state[8][0][i] + " " + toString(state[8][1][i]) + " " + toString(state[8][2][i]) + " " + toString(state[8][3][i]) + "\n";
         i = i + 1;
     }
     // Instructions
     var num_instr = state[11] / 3;
-    println toString(num_instr);
+    result = result + toString(num_instr) + "\n";
     i = 0;
     while (i < num_instr) {
-        print toString(state[10][i * 3]);
-        print " ";
-        print toString(state[10][i * 3 + 1]);
-        print " ";
-        println toString(state[10][i * 3 + 2]);
+        result = result + toString(state[10][i * 3]) + " " + toString(state[10][i * 3 + 1]) + " " + toString(state[10][i * 3 + 2]) + "\n";
         i = i + 1;
     }
+    return result;
 }
-
-// ===== Self source (the compiler compiles itself) =====
-// This is a placeholder - the actual source will be embedded
-// by the build system (see embed_source.py or the Makefile)
-
+// ===== Main =====
 func main() {
     var n = argc();
     if (n < 3) {
@@ -1132,11 +1417,14 @@ func main() {
     var file = argv(2);
     var src = readFile(file);
     var state = make_state(src);
+    // Set search dirs from input file path
+    state[28] = dirname(file);
     lex_source(state);
-    var prog = parse_program(state);
-    compile_program(state, prog);
+    parse_program(state);
+    compile_program(state);
     if (strcmp(cmd, "dump-text") == 0) {
-        output_bytecode(state);
+        var bc = output_bytecode(state);
+        print bc;
     } else {
         println "Unknown command";
         return 1;

@@ -1,0 +1,99 @@
+// main.mil - Unified minilang toolchain entry point, fully self-hosted
+// Replaces main.c. Requires compiler.mil, vm.mil, llvm_gen.mil.
+// Usage: ./minilang run main.mil <command> [args...]
+//   run <file>       Compile .mil and run, or run precompiled text bytecode
+//   dump-text <file> Compile and dump text bytecode
+//   llvm <file>      Compile and output LLVM IR
+require compiler;
+require vm;
+require llvm_gen;
+func print_usage() {
+    println "Usage: main <command> [args...]";
+    println "Commands:";
+    println "  run <file>       Compile and run .mil (or run text bytecode)";
+    println "  dump-text <file> Compile and dump text bytecode";
+    println "  llvm <file>      Compile to LLVM IR";
+}
+func is_bytecode_text(src) {
+    if (len(src) < 11) { return 0; }
+    return strcmp(substr(src, 0, 11), "MINILANGBC") == 0;
+}
+func parse_source(file, src) {
+    var state = compiler.make_state(src);
+    state[28] = compiler.dirname(file);
+    compiler.lex_source(state);
+    compiler.parse_program(state);
+    return state;
+}
+func compile_to_bytecode(file, src) {
+    var state = parse_source(file, src);
+    compiler.compile_program(state);
+    return compiler.output_bytecode(state);
+}
+func cmd_run(n) {
+    if (n < 3) {
+        println "Error: run requires a filename";
+        return 1;
+    }
+    var file = argv(2);
+    var src = readFile(file);
+    var bc_text = "";
+    if (is_bytecode_text(src)) {
+        bc_text = src;
+    } else {
+        bc_text = compile_to_bytecode(file, src);
+    }
+    g_prog_argc = n - 2;
+    g_prog_argv_offset = 2;
+    vm.run_bytecode(bc_text);
+    return 0;
+}
+func cmd_dump_text(n) {
+    if (n < 3) {
+        println "Error: dump-text requires a filename";
+        return 1;
+    }
+    var file = argv(2);
+    var src = readFile(file);
+    if (is_bytecode_text(src)) {
+        print src;
+        return 0;
+    }
+    var bc = compile_to_bytecode(file, src);
+    print bc;
+    return 0;
+}
+func cmd_llvm(n) {
+    if (n < 3) {
+        println "Error: llvm requires a filename";
+        return 1;
+    }
+    var file = argv(2);
+    var src = readFile(file);
+    var state = parse_source(file, src);
+    var ir = llvm_gen.generate_ir(state);
+    print ir;
+    return 0;
+}
+func main() {
+    var n = argc();
+    if (n < 2) {
+        print_usage();
+        return 1;
+    }
+    var cmd = argv(1);
+    if (strcmp(cmd, "run") == 0) {
+        return cmd_run(n);
+    } else if (strcmp(cmd, "dump-text") == 0) {
+        return cmd_dump_text(n);
+    } else if (strcmp(cmd, "llvm") == 0) {
+        return cmd_llvm(n);
+    } else if (strcmp(cmd, "--help") == 0 || strcmp(cmd, "-h") == 0) {
+        print_usage();
+        return 0;
+    } else {
+        println "Unknown command: " + cmd;
+        print_usage();
+        return 1;
+    }
+}

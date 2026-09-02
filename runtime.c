@@ -191,6 +191,12 @@ Value ml_readfile(Value pathv) {
     Value v = {TAG_STR, (int64_t)(intptr_t)buf};
     return v;
 }
+Value ml_fileexists(Value pathv) {
+    const char *path = (const char*)(intptr_t)pathv.payload;
+    FILE *f = fopen(path, "rb");
+    if (f) { fclose(f); return vint(1); }
+    return vint(0);
+}
 
 Value ml_array_get(Value arr, int64_t idx) {
     if (arr.tag == TAG_ARR) {

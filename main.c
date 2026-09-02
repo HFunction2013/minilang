@@ -76,7 +76,16 @@ static void dump_bytecode_text(Program *prog) {
         if (c->type == VAL_INT) {
             printf("0 %lld\n", (long long)c->as.integer);
         } else if (c->type == VAL_STRING) {
-            printf("1 %s\n", c->as.string);
+            printf("1 ");
+            for (const char *p = c->as.string; *p; p++) {
+                unsigned char ch = (unsigned char)*p;
+                if (ch == '\\') printf("\\\\");
+                else if (ch == '\n') printf("\\n");
+                else if (ch == '\t') printf("\\t");
+                else if (ch == '\r') printf("\\r");
+                else putchar(ch);
+            }
+            printf("\n");
         } else {
             printf("0 0\n");
         }
@@ -151,6 +160,7 @@ static void dump_bytecode(Program *prog) {
             case OP_STORE_GLOBAL: name="STORE_GLOBAL"; break;
             case OP_READALL: name="READALL"; break;
             case OP_MAKE_ARRAY: name="MAKE_ARRAY"; break;
+            case OP_FILEEXISTS: name="FILEEXISTS"; break;
         }
         printf("  %4d: %-12s %6d %6d\n", i/3, name, op1, op2);
     }

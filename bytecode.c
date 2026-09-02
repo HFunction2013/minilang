@@ -360,6 +360,11 @@ static void compile_expr(Compiler *c, Node *n) {
                 bc_emit(c->prog, OP_READFILE, 0, 0);
                 break;
             }
+            if (strcmp(n->call.name, "fileExists") == 0) {
+                compile_expr(c, n->call.args[0]);
+                bc_emit(c->prog, OP_FILEEXISTS, 0, 0);
+                break;
+            }
             // User-defined function
             // Resolve alias: if n->call.name is an alias, use target name
             const char *cname = n->call.name;
