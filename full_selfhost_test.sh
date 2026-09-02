@@ -1,5 +1,13 @@
 #!/bin/bash
 # Full self-hosting verification: all C components have mil equivalents
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
 set -e
 cd "$(dirname "$0")"
 echo "=== Building boot compiler ==="
@@ -174,8 +182,8 @@ if python3 -c "import llvmlite" 2>/dev/null; then
     python3 ir_compile.py /tmp/sh_B_compiler.ll /tmp/sh_B_compiler.o > /dev/null 2>&1
     gcc -o /tmp/sh_compiler_A_bin /tmp/sh_A_compiler.o runtime.c -O2 2>/dev/null
     gcc -o /tmp/sh_compiler_B_bin /tmp/sh_B_compiler.o runtime.c -O2 2>/dev/null
-    ha=$(sha256sum /tmp/sh_compiler_A_bin | cut -d' ' -f1)
-    hb=$(sha256sum /tmp/sh_compiler_B_bin | cut -d' ' -f1)
+    ha=$(sha256_file /tmp/sh_compiler_A_bin | cut -d' ' -f1)
+    hb=$(sha256_file /tmp/sh_compiler_B_bin | cut -d' ' -f1)
     check "$ha" "$hb" "A/B binary sha256 identical ($ha)"
 fi
 echo "  Step 5: B (A-compiled bytecode) runs all test programs"
@@ -198,8 +206,8 @@ if [ -f main ]; then
     ./main_A build main.mil > /dev/null 2>&1
     if [ -f main ]; then
         check "OK" "OK" "A (main_A) builds main.mil -> B (main) natively"
-        ha=$(sha256sum main_A | cut -d' ' -f1)
-        hb=$(sha256sum main | cut -d' ' -f1)
+        ha=$(sha256_file main_A | cut -d' ' -f1)
+        hb=$(sha256_file main | cut -d' ' -f1)
         check "$ha" "$hb" "A/B native binary sha256 identical ($ha)"
         echo "  B runs all test programs"
         for f in tests/hello.mil tests/fib.mil tests/array_test.mil tests/nested_test.mil tests/require_test.mil tests/require_path.mil; do
