@@ -483,6 +483,19 @@ static char *compile_expr_ir(IRGen *g, Node *n) {
                 ir_emit(g, "  %s = call %%Value @ml_fileexists(%%Value %s)\n", r, a);
                 free(a); return r;
             }
+            if (strcmp(n->call.name, "writeFile") == 0) {
+                char *a = compile_expr_ir(g, n->call.args[0]); // path
+                char *b = compile_expr_ir(g, n->call.args[1]); // content
+                char *r = new_temp(g);
+                ir_emit(g, "  %s = call %%Value @ml_writefile(%%Value %s, %%Value %s)\n", r, a, b);
+                free(a); free(b); return r;
+            }
+            if (strcmp(n->call.name, "system") == 0) {
+                char *a = compile_expr_ir(g, n->call.args[0]);
+                char *r = new_temp(g);
+                ir_emit(g, "  %s = call %%Value @ml_system(%%Value %s)\n", r, a);
+                free(a); return r;
+            }
             // User function call
             // Resolve alias
             const char *cname = n->call.name;
@@ -566,6 +579,8 @@ char *generate_llvm_ir(Parser *p) {
     ir_emit(&g, "declare %%Value @ml_argv(%%Value)\n");
     ir_emit(&g, "declare %%Value @ml_readfile(%%Value)\n");
     ir_emit(&g, "declare %%Value @ml_fileexists(%%Value)\n");
+    ir_emit(&g, "declare %%Value @ml_writefile(%%Value, %%Value)\n");
+    ir_emit(&g, "declare %%Value @ml_system(%%Value)\n");
     ir_emit(&g, "declare void @ml_set_args(i32, i8**)\n");
     ir_emit(&g, "declare %%Value @ml_array_get(%%Value, i64)\n");
     ir_emit(&g, "declare void @ml_array_set(%%Value, i64, %%Value)\n");

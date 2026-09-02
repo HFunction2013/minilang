@@ -161,6 +161,8 @@ static void dump_bytecode(Program *prog) {
             case OP_READALL: name="READALL"; break;
             case OP_MAKE_ARRAY: name="MAKE_ARRAY"; break;
             case OP_FILEEXISTS: name="FILEEXISTS"; break;
+            case OP_WRITEFILE: name="WRITEFILE"; break;
+            case OP_SYSTEM: name="SYSTEM"; break;
         }
         printf("  %4d: %-12s %6d %6d\n", i/3, name, op1, op2);
     }

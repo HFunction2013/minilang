@@ -109,6 +109,8 @@ var OP_ARGC = 41;
 var OP_ARGV = 42;
 var OP_READFILE = 43;
 var OP_FILEEXISTS = 44;
+var OP_WRITEFILE = 45;
+var OP_SYSTEM = 46;
 // ===== State layout =====
 // 0=src, 1=pos, 2=line, 3=tokens, 4=tok_count
 // 5=parse_pos, 6=constants, 7=const_count, 8=funcs, 9=func_count
@@ -173,6 +175,8 @@ func is_builtin_name(name) {
     if (strcmp(name, "argv") == 0) { return 1; }
     if (strcmp(name, "readFile") == 0) { return 1; }
     if (strcmp(name, "fileExists") == 0) { return 1; }
+    if (strcmp(name, "writeFile") == 0) { return 1; }
+    if (strcmp(name, "system") == 0) { return 1; }
     return 0;
 }
 func dirname(path) {
@@ -1269,6 +1273,13 @@ func compile_expr(state, node) {
         } else if (strcmp(name, "fileExists") == 0) {
             compile_expr(state, node[3][0]);
             emit(state, OP_FILEEXISTS, 0, 0);
+        } else if (strcmp(name, "writeFile") == 0) {
+            compile_expr(state, node[3][0]); // path
+            compile_expr(state, node[3][1]); // content
+            emit(state, OP_WRITEFILE, 0, 0);
+        } else if (strcmp(name, "system") == 0) {
+            compile_expr(state, node[3][0]);
+            emit(state, OP_SYSTEM, 0, 0);
         } else {
             // Resolve alias
             var cname = name;

@@ -407,6 +407,19 @@ func compile_expr(node) {
             ir_emit("  " + r + " = call %Value @ml_fileexists(%Value " + a + ")\n");
             return r;
         }
+        if (strcmp(name, "writeFile") == 0) {
+            var a = compile_expr(node[3][0]);
+            var b = compile_expr(node[3][1]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_writefile(%Value " + a + ", %Value " + b + ")\n");
+            return r;
+        }
+        if (strcmp(name, "system") == 0) {
+            var a = compile_expr(node[3][0]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_system(%Value " + a + ")\n");
+            return r;
+        }
         // User function call - resolve alias
         // Note: aliases are stored in the compiler state at indices 25,26,27
         // But since we required compiler, the state is passed in. We'll resolve
@@ -522,6 +535,8 @@ func generate_ir(state) {
     ir_emit("declare %Value @ml_argv(%Value)\n");
     ir_emit("declare %Value @ml_readfile(%Value)\n");
     ir_emit("declare %Value @ml_fileexists(%Value)\n");
+    ir_emit("declare %Value @ml_writefile(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_system(%Value)\n");
     ir_emit("declare void @ml_set_args(i32, i8**)\n");
     ir_emit("declare %Value @ml_array_get(%Value, i64)\n");
     ir_emit("declare void @ml_array_set(%Value, i64, %Value)\n");

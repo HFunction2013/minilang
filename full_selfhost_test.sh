@@ -86,6 +86,44 @@ MILEOF
 ./minilang run main.mil run /tmp/sh_args.mil hello world > /tmp/sh_args.out 2>/dev/null
 echo -e "3\n/tmp/sh_args.mil\nhello\nworld" > /tmp/sh_args_expected.txt
 check "$(diff -q /tmp/sh_args_expected.txt /tmp/sh_args.out >/dev/null && echo OK)" "OK" "program arguments correct"
+echo "=== 8. build command ==="
+echo "  build -b: compile to .milc bytecode file"
+rm -f /tmp/sh_hello.milc
+cp tests/hello.mil /tmp/sh_hello.mil
+./minilang run main.mil build -b /tmp/sh_hello.mil > /dev/null 2>&1
+check "$(test -f /tmp/sh_hello.milc && echo OK)" "OK" "build -b creates .milc file"
+echo "  run .milc file"
+./minilang run main.mil run /tmp/sh_hello.milc > /tmp/sh_milc_run.out 2>/dev/null
+check "$(diff -q /tmp/sh_boot_run.out /tmp/sh_milc_run.out >/dev/null && echo OK)" "OK" "run .milc output matches"
+echo "  build -e: generate .ll file (IR compile requires llvmlite)"
+rm -f /tmp/sh_hello.ll
+./minilang run main.mil build -e /tmp/sh_hello.mil > /dev/null 2>&1
+check "$(test -f /tmp/sh_hello.ll && echo OK)" "OK" "build -e creates .ll file"
+echo "  boot build main.mil: no duplicate global definitions"
+./minilang llvm main.mil 2>/dev/null
+check "$(grep -a '^@global_' main.ll 2>/dev/null | sort | uniq -d | wc -l | tr -d ' ')" "0" "no duplicate global definitions in main.mil IR"
+rm -f main.ll /tmp/sh_hello.mil /tmp/sh_hello.milc /tmp/sh_hello.ll
+echo "=== 9. Native build (requires llvmlite + gcc) ==="
+if python3 -c "import llvmlite" 2>/dev/null; then
+    echo "  boot build main.mil -> native executable"
+    rm -f /tmp/sh_main_native
+    ./minilang build main.mil > /dev/null 2>&1
+    if [ -f main ]; then
+        mv main /tmp/sh_main_native
+        check "OK" "OK" "boot build main.mil produces native executable"
+        echo "  native executable runs programs"
+        /tmp/sh_main_native run tests/hello.mil > /tmp/sh_native_run.out 2>/dev/null
+        check "$(diff -q /tmp/sh_boot_run.out /tmp/sh_native_run.out >/dev/null && echo OK)" "OK" "native executable output matches"
+        echo "  native executable self-hosts compiler.mil"
+        /tmp/sh_main_native dump-text compiler.mil > /tmp/sh_native_compiler.txt 2>/dev/null
+        check "$(diff -q /tmp/sh_boot.txt /tmp/sh_native_compiler.txt >/dev/null && echo OK)" "OK" "native executable compiles compiler.mil identically"
+        rm -f /tmp/sh_main_native
+    else
+        check "FAIL" "OK" "boot build main.mil produces native executable"
+    fi
+else
+    echo "  SKIP: llvmlite not installed"
+fi
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
 if [ $FAIL -eq 0 ]; then

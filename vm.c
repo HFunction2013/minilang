@@ -228,6 +228,28 @@ Value vm_run(VM *vm) {
                 else { push(vm, make_int(0)); }
                 break;
             }
+            case OP_WRITEFILE: {
+                Value contentv = pop(vm);
+                Value pathv = pop(vm);
+                const char *path = pathv.as.string;
+                const char *content = contentv.as.string;
+                FILE *f = fopen(path, "w");
+                if (f) {
+                    fwrite(content, 1, strlen(content), f);
+                    fclose(f);
+                    push(vm, make_int(1));
+                } else {
+                    push(vm, make_int(0));
+                }
+                break;
+            }
+            case OP_SYSTEM: {
+                Value cmdv = pop(vm);
+                const char *cmd = cmdv.as.string;
+                int rc = system(cmd);
+                push(vm, make_int(rc));
+                break;
+            }
             case OP_PRINT: {
                 Value v = pop(vm);
                 value_print(v, 0);

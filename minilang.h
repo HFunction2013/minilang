@@ -223,6 +223,8 @@ typedef enum {
     OP_ARGV,          // pop index, push argv[index] as string
     OP_READFILE,      // pop path, push file contents as string
     OP_FILEEXISTS,    // pop path, push 1 if file exists else 0
+    OP_WRITEFILE,     // pop content, pop path, write file, push 1 on success
+    OP_SYSTEM,        // pop command, execute via system(), push exit code
 } OpCode;
 
 typedef struct {

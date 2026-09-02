@@ -48,6 +48,8 @@ var OP_ARGC = 41;
 var OP_ARGV = 42;
 var OP_READFILE = 43;
 var OP_FILEEXISTS = 44;
+var OP_WRITEFILE = 45;
+var OP_SYSTEM = 46;
 // ===== Value types =====
 var VAL_NIL = 0;
 var VAL_INT = 1;
@@ -615,6 +617,15 @@ func run_vm() {
         } else if (op == OP_FILEEXISTS) {
             var pathv = pop();
             push(v_int(fileExists(pathv[1])));
+        } else if (op == OP_WRITEFILE) {
+            var contentv = pop();
+            var pathv = pop();
+            var ok = writeFile(pathv[1], contentv[1]);
+            push(v_int(ok));
+        } else if (op == OP_SYSTEM) {
+            var cmdv = pop();
+            var rc = system(cmdv[1]);
+            push(v_int(rc));
         } else {
             print "VM error: unknown opcode ";
             println toString(op);

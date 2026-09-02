@@ -15,8 +15,8 @@ require compiler;
 var MILC_TEXT_MAGIC = "MINILANGBC";
 // Check if a string is text bytecode (equivalent to is_milc_file)
 func is_bytecode(text) {
-    if (len(text) < 11) { return 0; }
-    return strcmp(substr(text, 0, 11), MILC_TEXT_MAGIC) == 0;
+    if (len(text) < 10) { return 0; }
+    return strcmp(substr(text, 0, 10), MILC_TEXT_MAGIC) == 0;
 }
 // Serialize compiler state to text bytecode (equivalent to program_write_milc)
 // Returns the bytecode string; caller prints to stdout to "write" to file.

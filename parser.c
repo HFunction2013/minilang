@@ -487,9 +487,9 @@ static void rename_module_refs(Node *n, const char *prefix, int prefix_len) {
         case NODE_CALL: {
             // Rename internal function calls (not builtins, not already qualified)
             if (strchr(n->call.name, '.') == NULL) {
-                const char *builtins[] = {"len","charAt","substr","toString","toInt","strcmp","readAll","array","print","println","argc","argv","readFile","fileExists"};
+                const char *builtins[] = {"len","charAt","substr","toString","toInt","strcmp","readAll","array","print","println","argc","argv","readFile","fileExists","writeFile","system"};
                 int is_builtin = 0;
-                for (int i = 0; i < 14; i++) if (strcmp(n->call.name, builtins[i]) == 0) { is_builtin = 1; break; }
+                for (int i = 0; i < 16; i++) if (strcmp(n->call.name, builtins[i]) == 0) { is_builtin = 1; break; }
                 if (!is_builtin) {
                     char *newname = malloc(strlen(n->call.name) + prefix_len + 1);
                     snprintf(newname, strlen(n->call.name) + prefix_len + 1, "%s%s", prefix, n->call.name);
@@ -558,6 +558,17 @@ static void load_module(Parser *p, const char *module_name, int search_syslib_on
     Lexer *lexer = lexer_new(src);
     lex(lexer);
     Parser *mp = parser_new(lexer);
+    /* Propagate already-loaded modules from parent parser so nested
+       require of the same module is skipped (avoids duplicate definitions). */
+    for (int mi = 0; mi < p->module_count; mi++) {
+        if (mp->module_count >= mp->module_cap) {
+            mp->module_cap = mp->module_cap ? mp->module_cap*2 : 4;
+            mp->modules = realloc(mp->modules, sizeof(ModuleInfo)*mp->module_cap);
+        }
+        ModuleInfo *mmi = &mp->modules[mp->module_count++];
+        mmi->module_name = strdup(p->modules[mi].module_name);
+        mmi->exports = NULL; mmi->export_count = 0; mmi->export_cap = 0;
+    }
     /* Save/restore search dirs: modules resolve their own requires relative to same dirs */
     parse(mp);
     /* Rename module functions: module_name prefix */
@@ -584,6 +595,12 @@ static void load_module(Parser *p, const char *module_name, int search_syslib_on
     mp->func_count = 0;
     for (int i = 0; i < mp->global_count; i++) {
         Node *g = mp->globals[i];
+        // Deduplicate: skip if a global with the same name already exists
+        int exists = 0;
+        for (int j = 0; j < p->global_count; j++) {
+            if (strcmp(p->globals[j]->var_decl.name, g->var_decl.name) == 0) { exists = 1; break; }
+        }
+        if (exists) continue;
         if (p->global_count >= p->global_cap) {
             p->global_cap = p->global_cap ? p->global_cap*2 : 16;
             p->globals = realloc(p->globals, sizeof(Node*)*p->global_cap);

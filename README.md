@@ -18,7 +18,7 @@
   - `main.mil`：统一 CLI 入口（对应 main.c）
 - **自举编译器**：`compiler.mil` 能编译自身，输出与 C boot 编译器逐字节一致
 - **无外部依赖**：不使用文件、网络等外部交互（除 console I/O）
-- **内置函数**：`len`, `charAt`, `substr`, `toString`, `toInt`, `strcmp`, `readAll`, `array`, `argc`, `argv`, `readFile`, `fileExists`
+- **内置函数**：`len`, `charAt`, `substr`, `toString`, `toInt`, `strcmp`, `readAll`, `array`, `argc`, `argv`, `readFile`, `fileExists`, `writeFile`, `system`
 - **模块系统（require）**：从 syslib 或脚本目录加载模块，支持命名空间访问和选择性导入
 - **REPL**：交互式命令行，支持多行输入、表达式求值、跨行保留函数/变量/模块
 - **.milc 字节码文件**：可编译为二进制字节码文件，随时加载运行
@@ -249,6 +249,12 @@ SUCCESS: Boot and self-hosted bytecode are IDENTICAL!
 
 # 输出 LLVM IR
 ./minilang run main.mil llvm tests/hello.mil
+
+# 编译为 .milc 字节码文件（文本格式）
+./minilang run main.mil build -b tests/hello.mil
+
+# 编译为原生可执行文件（LLVM IR + ir_compile.py + gcc）
+./minilang run main.mil build -e tests/hello.mil
 ```
 
 ### 完整自举链路验证

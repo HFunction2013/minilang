@@ -198,6 +198,24 @@ Value ml_fileexists(Value pathv) {
     return vint(0);
 }
 
+Value ml_writefile(Value pathv, Value contentv) {
+    const char *path = (const char*)(intptr_t)pathv.payload;
+    const char *content = (const char*)(intptr_t)contentv.payload;
+    FILE *f = fopen(path, "w");
+    if (f) {
+        fwrite(content, 1, strlen(content), f);
+        fclose(f);
+        return vint(1);
+    }
+    return vint(0);
+}
+
+Value ml_system(Value cmdv) {
+    const char *cmd = (const char*)(intptr_t)cmdv.payload;
+    int rc = system(cmd);
+    return vint(rc);
+}
+
 Value ml_array_get(Value arr, int64_t idx) {
     if (arr.tag == TAG_ARR) {
         Array *a = carr(arr);

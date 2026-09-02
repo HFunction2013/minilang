@@ -1,6 +1,7 @@
 *.ll
 *.o
 *.milc
+/main
 /minilang
 /compiler
 /tests/array_test
