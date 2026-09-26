@@ -198,6 +198,58 @@ Value ml_fileexists(Value pathv) {
     return vint(0);
 }
 
+/* readFileBytes(path): read a file as raw bytes -> array of ints (0..255) */
+Value ml_readfilebytes(Value pathv) {
+    const char *path = (const char*)(intptr_t)pathv.payload;
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "Cannot open file: %s\n", path);
+        exit(1);
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 0) size = 0;
+    Value *items = malloc(sizeof(Value) * (size > 0 ? size : 1));
+    long n = 0;
+    int c;
+    while (n < size && (c = fgetc(f)) != EOF) items[n++] = vint((unsigned char)c);
+    fclose(f);
+    Value v = ml_array_create(n, items);
+    free(items);
+    return v;
+}
+
+/* chr(n): single-character string from byte value */
+Value ml_chr(Value nv) {
+    char buf[2];
+    buf[0] = (char)(unsigned char)(nv.payload & 0xFF);
+    buf[1] = '\0';
+    return vstr(buf);
+}
+
+/* writeFileBytes(path, arr): write int array as raw bytes -> 1 on success */
+Value ml_writefilebytes(Value pathv, Value arrv) {
+    const char *path = (const char*)(intptr_t)pathv.payload;
+    FILE *f = fopen(path, "wb");
+    if (!f) return vint(0);
+    int ok = 1;
+    Array *a = carr(arrv);
+    if (a) {
+        for (int64_t i = 0; i < a->len; i++) {
+            unsigned char b = 0;
+            if (a->data[i].tag == TAG_INT) b = (unsigned char)(a->data[i].payload & 0xFF);
+            else if (a->data[i].tag == TAG_STR) {
+                const char *s = cstr(a->data[i]);
+                if (s && s[0]) b = (unsigned char)s[0];
+            }
+            if (fwrite(&b, 1, 1, f) != 1) { ok = 0; break; }
+        }
+    }
+    fclose(f);
+    return vint(ok);
+}
+
 Value ml_writefile(Value pathv, Value contentv) {
     const char *path = (const char*)(intptr_t)pathv.payload;
     const char *content = (const char*)(intptr_t)contentv.payload;

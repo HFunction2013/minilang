@@ -261,6 +261,58 @@ Value vm_run(VM *vm) {
                 }
                 break;
             }
+            case OP_READFILEBYTES: {
+                // Read a file as raw bytes: push an int array, one element per byte (0..255)
+                Value pathv = pop(vm);
+                const char *path = pathv.as.string;
+                FILE *f = fopen(path, "rb");
+                if (!f) {
+                    fprintf(stderr, "Cannot open file: %s\n", path);
+                    exit(1);
+                }
+                fseek(f, 0, SEEK_END);
+                long size = ftell(f);
+                fseek(f, 0, SEEK_SET);
+                if (size < 0) size = 0;
+                Value *items = malloc(sizeof(Value) * (size > 0 ? size : 1));
+                long n = 0;
+                int c;
+                while (n < size && (c = fgetc(f)) != EOF) items[n++] = make_int((unsigned char)c);
+                fclose(f);
+                push(vm, make_array(items, (int)n));
+                free(items);
+                break;
+            }
+            case OP_CHR: {
+                Value nv = pop(vm);
+                char buf[2];
+                buf[0] = (char)(unsigned char)(nv.as.integer & 0xFF);
+                buf[1] = '\0';
+                push(vm, make_string(buf));
+                break;
+            }
+            case OP_WRITEFILEBYTES: {
+                // Write an int array as raw bytes: pop array, pop path
+                Value arrv = pop(vm);
+                Value pathv = pop(vm);
+                const char *path = pathv.as.string;
+                FILE *f = fopen(path, "wb");
+                if (!f) { push(vm, make_int(0)); break; }
+                int ok = 1;
+                if (arrv.type == VAL_ARRAY) {
+                    for (int i = 0; i < arrv.as.array.count; i++) {
+                        unsigned char b = 0;
+                        Value it = arrv.as.array.items[i];
+                        if (it.type == VAL_INT) b = (unsigned char)(it.as.integer & 0xFF);
+                        else if (it.type == VAL_STRING && it.as.string && it.as.string[0])
+                            b = (unsigned char)it.as.string[0];
+                        if (fwrite(&b, 1, 1, f) != 1) { ok = 0; break; }
+                    }
+                }
+                fclose(f);
+                push(vm, make_int(ok));
+                break;
+            }
             case OP_PRINT: {
                 Value v = pop(vm);
                 value_print(v, 0);

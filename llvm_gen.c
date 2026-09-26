@@ -70,6 +70,14 @@ static void ir_emit_global(IRGen *g, const char *fmt, ...) {
     g->globals_len += needed;
 }
 
+/* Ensure room for `extra` more bytes (plus the terminating NUL) */
+static void ir_reserve(IRGen *g, int extra) {
+    if (g->len + extra + 1 > g->cap) {
+        while (g->len + extra + 1 > g->cap) g->cap *= 2;
+        g->buf = realloc(g->buf, g->cap);
+    }
+}
+
 static void ir_emit(IRGen *g, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -501,6 +509,25 @@ static char *compile_expr_ir(IRGen *g, Node *n) {
                 ir_emit(g, "  %s = call %%Value @ml_readline()\n", r);
                 return r;
             }
+            if (strcmp(n->call.name, "readFileBytes") == 0) {
+                char *a = compile_expr_ir(g, n->call.args[0]);
+                char *r = new_temp(g);
+                ir_emit(g, "  %s = call %%Value @ml_readfilebytes(%%Value %s)\n", r, a);
+                free(a); return r;
+            }
+            if (strcmp(n->call.name, "writeFileBytes") == 0) {
+                char *a = compile_expr_ir(g, n->call.args[0]); // path
+                char *b = compile_expr_ir(g, n->call.args[1]); // byte array
+                char *r = new_temp(g);
+                ir_emit(g, "  %s = call %%Value @ml_writefilebytes(%%Value %s, %%Value %s)\n", r, a, b);
+                free(a); free(b); return r;
+            }
+            if (strcmp(n->call.name, "chr") == 0) {
+                char *a = compile_expr_ir(g, n->call.args[0]);
+                char *r = new_temp(g);
+                ir_emit(g, "  %s = call %%Value @ml_chr(%%Value %s)\n", r, a);
+                free(a); return r;
+            }
             // User function call
             // Resolve alias
             const char *cname = n->call.name;
@@ -587,6 +614,9 @@ char *generate_llvm_ir(Parser *p) {
     ir_emit(&g, "declare %%Value @ml_writefile(%%Value, %%Value)\n");
     ir_emit(&g, "declare %%Value @ml_system(%%Value)\n");
     ir_emit(&g, "declare %%Value @ml_readline()\n");
+    ir_emit(&g, "declare %%Value @ml_readfilebytes(%%Value)\n");
+    ir_emit(&g, "declare %%Value @ml_writefilebytes(%%Value, %%Value)\n");
+    ir_emit(&g, "declare %%Value @ml_chr(%%Value)\n");
     ir_emit(&g, "declare void @ml_set_args(i32, i8**)\n");
     ir_emit(&g, "declare %%Value @ml_array_get(%%Value, i64)\n");
     ir_emit(&g, "declare void @ml_array_set(%%Value, i64, %%Value)\n");
@@ -723,6 +753,7 @@ char *generate_llvm_ir(Parser *p) {
             }
             char *body_copy = malloc(body_len);
             memcpy(body_copy, g.buf + entry_pos, body_len);
+            ir_reserve(&g, g.allocas_len);
             // Insert allocas
             memcpy(g.buf + entry_pos, g.allocas, g.allocas_len);
             // Copy body after allocas
@@ -758,6 +789,7 @@ char *generate_llvm_ir(Parser *p) {
     if (first_define && g.globals_len > 0) {
         int insert_pos = first_define - g.buf + 1; // +1 for the newline
         int tail_len = g.len - insert_pos;
+        ir_reserve(&g, g.globals_len + 1);
         char *tail = malloc(tail_len);
         memcpy(tail, g.buf + insert_pos, tail_len);
         // Insert globals + newline

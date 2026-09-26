@@ -112,6 +112,9 @@ var OP_FILEEXISTS = 44;
 var OP_WRITEFILE = 45;
 var OP_SYSTEM = 46;
 var OP_READLINE = 47;
+var OP_READFILEBYTES = 48;
+var OP_WRITEFILEBYTES = 49;
+var OP_CHR = 50;
 // ===== State layout =====
 // 0=src, 1=pos, 2=line, 3=tokens, 4=tok_count
 // 5=parse_pos, 6=constants, 7=const_count, 8=funcs, 9=func_count
@@ -179,6 +182,9 @@ func is_builtin_name(name) {
     if (strcmp(name, "writeFile") == 0) { return 1; }
     if (strcmp(name, "system") == 0) { return 1; }
     if (strcmp(name, "readLine") == 0) { return 1; }
+    if (strcmp(name, "readFileBytes") == 0) { return 1; }
+    if (strcmp(name, "writeFileBytes") == 0) { return 1; }
+    if (strcmp(name, "chr") == 0) { return 1; }
     return 0;
 }
 func dirname(path) {
@@ -324,9 +330,9 @@ func lex_source(state) {
                     else if (esc == 92) { str = str + "\\"; }
                     else if (esc == 34) { str = str + "\""; }
                     else if (esc == 48) { str = str + char_to_str(0); }
-                    else { str = str + char_to_str(esc); }
+                    else { str = str + chr(esc); }
                 } else {
-                    str = str + char_to_str(ch);
+                    str = str + chr(ch);
                 }
                 state[1] = state[1] + 1;
             }
@@ -1300,6 +1306,16 @@ func compile_expr(state, node) {
             emit(state, OP_SYSTEM, 0, 0);
         } else if (strcmp(name, "readLine") == 0) {
             emit(state, OP_READLINE, 0, 0);
+        } else if (strcmp(name, "readFileBytes") == 0) {
+            compile_expr(state, node[3][0]);
+            emit(state, OP_READFILEBYTES, 0, 0);
+        } else if (strcmp(name, "writeFileBytes") == 0) {
+            compile_expr(state, node[3][0]); // path
+            compile_expr(state, node[3][1]); // byte array
+            emit(state, OP_WRITEFILEBYTES, 0, 0);
+        } else if (strcmp(name, "chr") == 0) {
+            compile_expr(state, node[3][0]);
+            emit(state, OP_CHR, 0, 0);
         } else {
             // Resolve alias
             var cname = name;
@@ -1399,7 +1415,7 @@ func escape_string(s) {
         else if (c == 10) { r = r + "\\n"; }
         else if (c == 9) { r = r + "\\t"; }
         else if (c == 13) { r = r + "\\r"; }
-        else { r = r + char_to_str(c); }
+        else { r = r + chr(c); }
         i = i + 1;
     }
     return r;

@@ -10,6 +10,7 @@
 require compiler;
 require vm;
 require llvm_gen;
+require milc_io;
 func print_usage() {
     println "Usage: main <command> [args...]";
     println "Commands:";
@@ -85,21 +86,21 @@ func cmd_run(n) {
     }
     var file = argv(2);
     var src = readFile(file);
-    var bc_text = "";
+    g_prog_argc = n - 2;
+    g_prog_argv_offset = 2;
     if (is_milc_binary(src)) {
-        var tdir = get_toolchain_dir();
-        var tmppath = file + ".decoded.txt";
-        var cmd = "python3 " + tdir + "milc_decode.py " + file + " " + tmppath;
-        system(cmd);
-        bc_text = readFile(tmppath);
-        system("rm -f " + tmppath);
-    } else if (is_bytecode_text(src)) {
+        // Binary .milc (magic "!milc"): parse it directly, no external tools
+        var bytes = readFileBytes(file);
+        var prog = milc_io.decode_bytes(bytes);
+        vm.run_milc(prog);
+        return 0;
+    }
+    var bc_text = "";
+    if (is_bytecode_text(src)) {
         bc_text = src;
     } else {
         bc_text = compile_to_bytecode(file, src);
     }
-    g_prog_argc = n - 2;
-    g_prog_argv_offset = 2;
     vm.run_bytecode(bc_text);
     return 0;
 }
@@ -135,21 +136,11 @@ func cmd_build_bytecode(file) {
     var src = readFile(file);
     var state = parse_source(file, src);
     compiler.compile_program(state);
-    var bc_full = compiler.output_bytecode_full(state);
     var outpath = replace_ext(file, ".milc");
-    var tmppath = outpath + ".tmp.txt";
-    var ok = writeFile(tmppath, bc_full);
+    // Encode and write the real binary format directly
+    var ok = milc_io.write_milc(outpath, state);
     if (ok != 1) {
-        println "Error: cannot write temp file";
-        return 1;
-    }
-    var tdir = get_toolchain_dir();
-    var cmd = "python3 " + tdir + "milc_encode.py " + tmppath + " " + outpath;
-    var rc = system(cmd);
-    // Clean up temp file
-    system("rm -f " + tmppath);
-    if (rc != 0) {
-        println "Error: binary encoding failed";
+        println "Error: cannot write " + outpath;
         return 1;
     }
     println "Bytecode written: " + outpath + " (magic \"!milc\")";

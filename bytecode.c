@@ -380,6 +380,22 @@ static void compile_expr(Compiler *c, Node *n) {
                 bc_emit(c->prog, OP_READLINE, 0, 0);
                 break;
             }
+            if (strcmp(n->call.name, "readFileBytes") == 0) {
+                compile_expr(c, n->call.args[0]);
+                bc_emit(c->prog, OP_READFILEBYTES, 0, 0);
+                break;
+            }
+            if (strcmp(n->call.name, "writeFileBytes") == 0) {
+                compile_expr(c, n->call.args[0]); // path
+                compile_expr(c, n->call.args[1]); // byte array
+                bc_emit(c->prog, OP_WRITEFILEBYTES, 0, 0);
+                break;
+            }
+            if (strcmp(n->call.name, "chr") == 0) {
+                compile_expr(c, n->call.args[0]);
+                bc_emit(c->prog, OP_CHR, 0, 0);
+                break;
+            }
             // User-defined function
             // Resolve alias: if n->call.name is an alias, use target name
             const char *cname = n->call.name;

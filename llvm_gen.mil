@@ -22,8 +22,23 @@ var g_break_targets = array(64, 0);
 var g_break_count = 0;
 var g_str_counter = 0;
 // ===== Helpers =====
+// Grow the chunk buffer on demand (fixed 512 slots overflowed on large programs)
+func ir_chunks_reserve(n) {
+    if (n <= len(g_ir_chunks)) { return 0; }
+    var newcap = len(g_ir_chunks) * 2;
+    while (newcap < n) { newcap = newcap * 2; }
+    var new_chunks = array(newcap, "");
+    var i = 0;
+    while (i < len(g_ir_chunks)) {
+        new_chunks[i] = g_ir_chunks[i];
+        i = i + 1;
+    }
+    g_ir_chunks = new_chunks;
+    return 0;
+}
 func flush_cur() {
     if (len(g_ir_cur) > 0) {
+        ir_chunks_reserve(g_ir_chunk_count + 1);
         g_ir_chunks[g_ir_chunk_count] = g_ir_cur;
         g_ir_chunk_count = g_ir_chunk_count + 1;
         g_ir_cur = "";
@@ -446,6 +461,25 @@ func compile_expr(node) {
             ir_emit("  " + r + " = call %Value @ml_readline()\n");
             return r;
         }
+        if (strcmp(name, "readFileBytes") == 0) {
+            var a = compile_expr(node[3][0]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_readfilebytes(%Value " + a + ")\n");
+            return r;
+        }
+        if (strcmp(name, "writeFileBytes") == 0) {
+            var a = compile_expr(node[3][0]);
+            var b = compile_expr(node[3][1]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_writefilebytes(%Value " + a + ", %Value " + b + ")\n");
+            return r;
+        }
+        if (strcmp(name, "chr") == 0) {
+            var a = compile_expr(node[3][0]);
+            var r = new_temp();
+            ir_emit("  " + r + " = call %Value @ml_chr(%Value " + a + ")\n");
+            return r;
+        }
         // User function call - resolve alias
         // Note: aliases are stored in the compiler state at indices 25,26,27
         // But since we required compiler, the state is passed in. We'll resolve
@@ -565,6 +599,9 @@ func generate_ir(state) {
     ir_emit("declare %Value @ml_writefile(%Value, %Value)\n");
     ir_emit("declare %Value @ml_system(%Value)\n");
     ir_emit("declare %Value @ml_readline()\n");
+    ir_emit("declare %Value @ml_readfilebytes(%Value)\n");
+    ir_emit("declare %Value @ml_writefilebytes(%Value, %Value)\n");
+    ir_emit("declare %Value @ml_chr(%Value)\n");
     ir_emit("declare void @ml_set_args(i32, i8**)\n");
     ir_emit("declare %Value @ml_array_get(%Value, i64)\n");
     ir_emit("declare void @ml_array_set(%Value, i64, %Value)\n");
@@ -638,6 +675,7 @@ func generate_ir(state) {
         // For simplicity, we'll do a string replacement approach
         if (len(g_alloca_buf) > 0) {
             flush_cur();
+            ir_chunks_reserve(g_ir_chunk_count + 2);
             // Insert alloca chunk right after the entry chunk (no string scan needed)
             var si = g_ir_chunk_count;
             while (si > g_entry_chunk + 1) {

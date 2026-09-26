@@ -51,6 +51,9 @@ var OP_FILEEXISTS = 44;
 var OP_WRITEFILE = 45;
 var OP_SYSTEM = 46;
 var OP_READLINE = 47;
+var OP_READFILEBYTES = 48;
+var OP_WRITEFILEBYTES = 49;
+var OP_CHR = 50;
 // ===== Value types =====
 var VAL_NIL = 0;
 var VAL_INT = 1;
@@ -630,6 +633,16 @@ func run_vm() {
         } else if (op == OP_READLINE) {
             var line = readLine();
             push(v_str(line));
+        } else if (op == OP_READFILEBYTES) {
+            var bpathv = pop();
+            push(v_arr(readFileBytes(bpathv[1])));
+        } else if (op == OP_WRITEFILEBYTES) {
+            var barrv = pop();
+            var bpathv2 = pop();
+            push(v_int(writeFileBytes(bpathv2[1], barrv[1])));
+        } else if (op == OP_CHR) {
+            var cval = pop();
+            push(v_str(chr(cval[1])));
         } else {
             print "VM error: unknown opcode ";
             println toString(op);
@@ -638,8 +651,20 @@ func run_vm() {
     }
 }
 // ===== Main =====
-func run_bytecode(input) {
-    load_bytecode(input);
+// Load a program already decoded from a binary .milc file (see milc_io.decode_bytes)
+func load_program(prog) {
+    g_const_count = prog[0];
+    g_constants = prog[1];
+    g_func_count = prog[2];
+    g_func_names = prog[3];
+    g_func_addrs = prog[4];
+    g_func_params = prog[5];
+    g_func_locals = prog[6];
+    g_num_instr = prog[7];
+    g_bc = prog[8];
+    return 0;
+}
+func run_loaded() {
     // Initialize globals to nil
     var gi = 0;
     while (gi < 1024) {
@@ -647,6 +672,16 @@ func run_bytecode(input) {
         gi = gi + 1;
     }
     run_vm();
+    return 0;
+}
+func run_milc(prog) {
+    load_program(prog);
+    run_loaded();
+    return 0;
+}
+func run_bytecode(input) {
+    load_bytecode(input);
+    run_loaded();
     return 0;
 }
 func main() {

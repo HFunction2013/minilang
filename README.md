@@ -14,14 +14,14 @@
   - `compiler.mil`：词法分析 + 解析 + 字节码生成（对应 lexer.c/parser.c/bytecode.c）
   - `vm.mil`：纯 mil 栈式虚拟机（对应 vm.c/value.c/runtime.c）
   - `llvm_gen.mil`：LLVM IR 生成器（对应 llvm_gen.c）
-  - `milc_io.mil`：字节码序列化（对应 milc_io.c，文本格式）
+  - `milc_io.mil`：字节码序列化（对应 milc_io.c，二进制 `!milc` 格式）
   - `main.mil`：统一 CLI 入口（对应 main.c）
 - **自举编译器**：`compiler.mil` 能编译自身，输出与 C boot 编译器逐字节一致
 - **无外部依赖**：不使用文件、网络等外部交互（除 console I/O）
-- **内置函数**：`len`, `charAt`, `substr`, `toString`, `toInt`, `strcmp`, `readAll`, `array`, `argc`, `argv`, `readFile`, `fileExists`, `writeFile`, `system`, `readLine`
+- **内置函数**：`len`, `charAt`, `substr`, `toString`, `toInt`, `strcmp`, `readAll`, `array`, `argc`, `argv`, `readFile`, `fileExists`, `writeFile`, `system`, `readLine`, `readFileBytes`, `writeFileBytes`, `chr`
 - **模块系统（require）**：从 syslib 或脚本目录加载模块，支持命名空间访问和选择性导入
 - **REPL**：交互式命令行，支持多行输入、表达式求值、跨行保留函数/变量/模块
-- **.milc 字节码文件**：可编译为二进制字节码文件，随时加载运行
+- **.milc 字节码文件**：可编译为二进制字节码文件，随时加载运行；mil 侧直接读写二进制，无需任何外部脚本
 
 ## 构建
 
@@ -244,7 +244,7 @@ SUCCESS: Boot and self-hosted bytecode are IDENTICAL!
 | value.c | vm.mil | 值类型与运算 |
 | runtime.c | vm.mil | 内置函数运行时 |
 | llvm_gen.c | llvm_gen.mil | AST → LLVM IR 生成 |
-| milc_io.c | milc_io.mil | 字节码序列化（文本格式） |
+| milc_io.c | milc_io.mil | 字节码序列化（二进制 `!milc`） |
 | main.c | main.mil | 统一 CLI 入口 |
 
 仅需 boot 编译器将 `main.mil` 编译为字节码，再由 `vm.mil` 执行，即可脱离所有 C 代码独立运行完整工具链。
@@ -266,7 +266,7 @@ SUCCESS: Boot and self-hosted bytecode are IDENTICAL!
 # 人类可读字节码反汇编（与 boot bytecode 输出逐字节一致）
 ./minilang run main.mil bytecode tests/hello.mil
 
-# 编译为 .milc 字节码文件（文本格式）
+# 编译为 .milc 字节码文件（二进制，与 boot 逐字节一致）
 ./minilang run main.mil build -b tests/hello.mil
 
 # 编译为原生可执行文件（LLVM IR + ir_compile.py + gcc）
@@ -294,13 +294,15 @@ diff /tmp/boot.txt /tmp/selfhost.txt  # 完全一致
 ## .milc 字节码文件格式
 
 - **boot（C 实现）**：`build -b` 生成二进制字节码文件，以魔数 `!milc`（5 字节）开头。
-- **mil 版（main.mil）**：由于 mil 语言本身无二进制写能力，`build -b` 输出文本字节码
-  （`MINILANGBC` 格式，与 `dump-text` 相同），仍可被 `vm.mil` 加载运行，功能等价。
+- **mil 版（main.mil）**：同样生成真正的二进制 `.milc`（魔数 `!milc`），与 boot 输出逐字节一致。
+  编解码由 `milc_io.mil` 用纯 minilang 实现（`milc.decode_bytes` / `milc.encode_state`），
+  依赖 `readFileBytes` / `writeFileBytes` 字节级 I/O，不再需要任何 Python 脚本。
 
 ```bash
 ./minilang build -b tests/hello.mil    # boot：生成二进制 tests/hello.milc（魔数 !milc）
-./minilang run main.mil build -b tests/hello.mil  # mil 版：生成文本 .milc
-./minilang run tests/hello.milc        # 直接运行字节码
+./minilang run main.mil build -b tests/hello.mil  # mil 版：生成同样的二进制 .milc
+./minilang run tests/hello.milc        # boot 直接运行字节码
+./minilang run main.mil run tests/hello.milc      # mil 版直接解析二进制字节码并运行
 ```
 
 ## 项目结构
@@ -320,7 +322,7 @@ minilang/
 ├── compiler.mil      # 自举编译器（minilang 语言实现，对应 lexer/parser/bytecode.c）
 ├── vm.mil            # 纯 mil 实现的虚拟机（对应 vm.c/value.c/runtime.c）
 ├── llvm_gen.mil      # 纯 mil 实现的 LLVM IR 生成器（对应 llvm_gen.c）
-├── milc_io.mil       # 纯 mil 实现的字节码序列化（对应 milc_io.c，文本格式）
+├── milc_io.mil       # 纯 mil 实现的字节码序列化（对应 milc_io.c，二进制 !milc）
 ├── main.mil          # 纯 mil 实现的统一 CLI 入口（对应 main.c）
 ├── syslib/           # 内置模块库
 │   ├── math.mil      # 整数数学库

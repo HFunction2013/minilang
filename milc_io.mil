@@ -1,29 +1,302 @@
-// milc_io.mil - Bytecode serialization in minilang
-// Functional equivalent of milc_io.c, using text format (MINILANGBC)
-// instead of binary (!milc) because minilang has no binary file I/O.
+// milc_io.mil - .milc bytecode serialization in minilang (binary, magic "!milc")
+// Functional equivalent of milc_io.c: reads and writes the real binary format
+// (previously required milc_encode.py / milc_decode.py as a bridge).
 //
-// Text format (same as compiler.output_bytecode / vm.load_bytecode):
-//   "MINILANGBC"
-//   const_count
-//   for each const: "0 <int>" or "1 <escaped_string>"
-//   func_count
-//   for each func: "<name> <address> <param_count> <local_count>"
-//   instr_count
-//   for each instr: "<op> <arg1> <arg2>"
+// Binary format (byte-identical to milc_io.c):
+//   "!milc" (5 bytes)
+//   int32 const_count
+//     per const: int8 type (1=int, 2=string, else nil)
+//                int:    int64 little-endian
+//                string: int32 len + raw bytes
+//                other:  int64 0
+//   int32 func_count
+//     per func: int32 namelen + name, int32 address, int32 param_count, int32 local_count
+//   int32 global_count
+//     per global: int32 namelen + name
+//   int32 bc_count
+//   bc_count * int32 bytecode
 require compiler;
-// Magic string for text bytecode format (binary equivalent: "!milc")
-var MILC_TEXT_MAGIC = "MINILANGBC";
-// Check if a string is text bytecode (equivalent to is_milc_file)
-func is_bytecode(text) {
-    if (len(text) < 10) { return 0; }
-    return strcmp(substr(text, 0, 10), MILC_TEXT_MAGIC) == 0;
+var VAL_NIL = 0;
+var VAL_INT = 1;
+var VAL_STRING = 2;
+// Replace file extension (e.g. "foo.mil" -> "foo.milc")
+func replace_ext(file, new_ext) {
+    var dot = -1;
+    var i = len(file) - 1;
+    while (i >= 0) {
+        if (charAt(file, i) == 46) { dot = i; i = -1; }
+        else { i = i - 1; }
+    }
+    if (dot >= 0) { return substr(file, 0, dot) + new_ext; }
+    return file + new_ext;
 }
-// Serialize compiler state to text bytecode (equivalent to program_write_milc)
-// Returns the bytecode string; caller prints to stdout to "write" to file.
-func serialize(state) {
-    return compiler.output_bytecode(state);
+// Magic "!milc"
+func is_milc_bytes(b) {
+    if (len(b) < 5) { return 0; }
+    if (b[0] != 33) { return 0; }
+    if (b[1] != 109) { return 0; }
+    if (b[2] != 105) { return 0; }
+    if (b[3] != 108) { return 0; }
+    if (b[4] != 99) { return 0; }
+    return 1;
 }
-// Compile source file and serialize to text bytecode
+// ===== Little-endian readers =====
+func rd32(b, pos) {
+    var v = b[pos] + b[pos + 1] * 256 + b[pos + 2] * 65536 + b[pos + 3] * 16777216;
+    if (v >= 2147483648) { v = v - 4294967296; }
+    return v;
+}
+func rd64(b, pos) {
+    var lo = b[pos] + b[pos + 1] * 256 + b[pos + 2] * 65536 + b[pos + 3] * 16777216;
+    var hi = b[pos + 4] + b[pos + 5] * 256 + b[pos + 6] * 65536 + b[pos + 7] * 16777216;
+    if (b[pos + 7] < 128) { return hi * 4294967296 + lo; }
+    // Negative value: v = -(2^64 - u), computed without overflowing int64
+    var t = 0;
+    if (lo == 0) {
+        t = (4294967296 - hi) * 4294967296;
+    } else {
+        t = (4294967295 - hi) * 4294967296 + (4294967296 - lo);
+    }
+    return 0 - t;
+}
+// Read a length-prefixed string (does not advance pos)
+func rdstr(b, pos) {
+    var n = rd32(b, pos);
+    var s = "";
+    var i = 0;
+    while (i < n) {
+        s = s + chr(b[pos + 4 + i]);
+        i = i + 1;
+    }
+    return s;
+}
+// ===== Little-endian writers (mutate b, return new pos) =====
+func wr32(b, pos, v) {
+    var u = v;
+    if (u < 0) { u = u + 4294967296; }
+    var i = 0;
+    while (i < 4) {
+        b[pos + i] = u % 256;
+        u = u / 256;
+        i = i + 1;
+    }
+    return pos + 4;
+}
+func wr64(b, pos, v) {
+    var u = v;
+    var neg = 0;
+    if (u < 0) { neg = 1; u = 0 - u; }
+    var i = 0;
+    while (i < 8) {
+        b[pos + i] = u % 256;
+        u = u / 256;
+        i = i + 1;
+    }
+    if (neg == 1) {
+        // Two's complement: invert every byte, then add 1
+        i = 0;
+        while (i < 8) {
+            b[pos + i] = 255 - b[pos + i];
+            i = i + 1;
+        }
+        var carry = 1;
+        i = 0;
+        while (i < 8) {
+            if (carry == 1) {
+                var nv = b[pos + i] + 1;
+                if (nv == 256) { b[pos + i] = 0; carry = 1; }
+                else { b[pos + i] = nv; carry = 0; }
+            }
+            i = i + 1;
+        }
+    }
+    return pos + 8;
+}
+func wrstr(b, pos, s) {
+    var n = len(s);
+    pos = wr32(b, pos, n);
+    var i = 0;
+    while (i < n) {
+        b[pos + i] = charAt(s, i);
+        i = i + 1;
+    }
+    return pos + n;
+}
+// ===== Decode: binary bytes -> runnable program =====
+// Returns: [const_count, constants, func_count, names, addrs, params, locals,
+//           instr_count, code]
+// constants[i] is a VM value pair [type, payload]; code is the flat bytecode.
+func decode_bytes(b) {
+    var pos = 5; // skip magic
+    var const_count = rd32(b, pos);
+    pos = pos + 4;
+    var constants = array(const_count + 1, 0);
+    var i = 0;
+    while (i < const_count) {
+        var t = b[pos];
+        pos = pos + 1;
+        if (t == 1) {
+            constants[i] = [VAL_INT, rd64(b, pos)];
+            pos = pos + 8;
+        } else if (t == 2) {
+            var slen = rd32(b, pos);
+            constants[i] = [VAL_STRING, rdstr(b, pos)];
+            pos = pos + 4 + slen;
+        } else {
+            constants[i] = [VAL_NIL, 0];
+            pos = pos + 8;
+        }
+        i = i + 1;
+    }
+    var func_count = rd32(b, pos);
+    pos = pos + 4;
+    var names = array(func_count + 1, "");
+    var addrs = array(func_count + 1, 0);
+    var params = array(func_count + 1, 0);
+    var fn_locals = array(func_count + 1, 0);
+    i = 0;
+    while (i < func_count) {
+        var nl = rd32(b, pos);
+        names[i] = rdstr(b, pos);
+        pos = pos + 4 + nl;
+        addrs[i] = rd32(b, pos);
+        pos = pos + 4;
+        params[i] = rd32(b, pos);
+        pos = pos + 4;
+        fn_locals[i] = rd32(b, pos);
+        pos = pos + 4;
+        i = i + 1;
+    }
+    // Globals: names are part of the file format but not needed to run
+    var global_count = rd32(b, pos);
+    pos = pos + 4;
+    i = 0;
+    while (i < global_count) {
+        var gl = rd32(b, pos);
+        pos = pos + 4 + gl;
+        i = i + 1;
+    }
+    var bc_count = rd32(b, pos);
+    pos = pos + 4;
+    var code = array(bc_count + 1, 0);
+    i = 0;
+    while (i < bc_count) {
+        code[i] = rd32(b, pos);
+        pos = pos + 4;
+        i = i + 1;
+    }
+    var prog = array(9, 0);
+    prog[0] = const_count;
+    prog[1] = constants;
+    prog[2] = func_count;
+    prog[3] = names;
+    prog[4] = addrs;
+    prog[5] = params;
+    prog[6] = fn_locals;
+    prog[7] = bc_count / 3;
+    prog[8] = code;
+    return prog;
+}
+// ===== Encode: compiler state -> binary bytes =====
+// state layout: 6=constants, 7=const_count, 8=funcs, 10=bytecode, 11=bc_count,
+//               15=global_names, 16=global_count
+func encode_state(state) {
+    var consts = state[6];
+    var const_count = state[7];
+    var funcs = state[8];
+    var fcount = funcs[4];
+    var fnames = funcs[0];
+    var gnames = state[15];
+    var gcount = state[16];
+    var code = state[10];
+    var bc_count = state[11];
+    // Exact size: magic + 4 section headers + bytecode
+    var size = 5 + 4 + 4 + 4 + 4 + bc_count * 4;
+    var i = 0;
+    while (i < const_count) {
+        var c = consts[i];
+        if (c[0] == 0) {
+            size = size + 9;
+        } else {
+            size = size + 9 + len(c[2]);
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while (i < fcount) {
+        size = size + 16 + len(fnames[i]);
+        i = i + 1;
+    }
+    i = 0;
+    while (i < gcount) {
+        size = size + 4 + len(gnames[i]);
+        i = i + 1;
+    }
+    var buf = array(size + 1, 0);
+    buf[0] = 33;
+    buf[1] = 109;
+    buf[2] = 105;
+    buf[3] = 108;
+    buf[4] = 99;
+    var pos = 5;
+    pos = wr32(buf, pos, const_count);
+    i = 0;
+    while (i < const_count) {
+        var c = consts[i];
+        if (c[0] == 0) {
+            buf[pos] = VAL_INT;
+            pos = pos + 1;
+            pos = wr64(buf, pos, c[1]);
+        } else {
+            buf[pos] = VAL_STRING;
+            pos = pos + 1;
+            pos = wrstr(buf, pos, c[2]);
+        }
+        i = i + 1;
+    }
+    pos = wr32(buf, pos, fcount);
+    i = 0;
+    while (i < fcount) {
+        pos = wrstr(buf, pos, fnames[i]);
+        pos = wr32(buf, pos, funcs[1][i]);
+        pos = wr32(buf, pos, funcs[2][i]);
+        pos = wr32(buf, pos, funcs[3][i]);
+        i = i + 1;
+    }
+    pos = wr32(buf, pos, gcount);
+    i = 0;
+    while (i < gcount) {
+        pos = wrstr(buf, pos, gnames[i]);
+        i = i + 1;
+    }
+    pos = wr32(buf, pos, bc_count);
+    i = 0;
+    while (i < bc_count) {
+        pos = wr32(buf, pos, code[i]);
+        i = i + 1;
+    }
+    // Trim buffer to the exact byte count written
+    var out = array(pos, 0);
+    i = 0;
+    while (i < pos) {
+        out[i] = buf[i];
+        i = i + 1;
+    }
+    return out;
+}
+// ===== File-level helpers =====
+// Read a .milc file and decode it to a runnable program
+func read_milc(path) {
+    var bytes = readFileBytes(path);
+    if (is_milc_bytes(bytes) == 0) { return array(1, 0); }
+    return decode_bytes(bytes);
+}
+// Encode compiler state and write it as a binary .milc file
+func write_milc(path, state) {
+    var bytes = encode_state(state);
+    return writeFileBytes(path, bytes);
+}
+// Compile source and serialize to text bytecode (kept for compatibility)
 func compile_and_serialize(file) {
     var src = readFile(file);
     var state = compiler.make_state(src);
@@ -31,18 +304,44 @@ func compile_and_serialize(file) {
     compiler.lex_source(state);
     compiler.parse_program(state);
     compiler.compile_program(state);
-    return serialize(state);
+    return compiler.output_bytecode(state);
 }
-// CLI: serialize a .mil file to text bytecode on stdout
+// CLI: milc_io <source.mil>            -> text bytecode on stdout
+//      milc_io -b <source.mil>         -> binary .milc file
 func main() {
     var n = argc();
     if (n < 2) {
-        println "Usage: milc_io <source.mil>";
+        println "Usage: milc_io [-b] <source.mil>";
         println "  Compiles source and outputs text bytecode to stdout";
+        println "  -b: write binary .milc file instead";
         return 1;
     }
     var file = argv(1);
-    var bc = compile_and_serialize(file);
-    print bc;
+    var binary = 0;
+    if (strcmp(file, "-b") == 0) {
+        if (n < 3) {
+            println "Usage: milc_io -b <source.mil>";
+            return 1;
+        }
+        binary = 1;
+        file = argv(2);
+    }
+    var src = readFile(file);
+    var state = compiler.make_state(src);
+    state[28] = compiler.dirname(file);
+    compiler.lex_source(state);
+    compiler.parse_program(state);
+    compiler.compile_program(state);
+    if (binary == 1) {
+        var outpath = replace_ext(file, ".milc");
+        var ok = write_milc(outpath, state);
+        if (ok != 1) {
+            println "Error: cannot write " + outpath;
+            return 1;
+        }
+        println "Bytecode written: " + outpath + " (magic \"!milc\")";
+        return 0;
+    }
+    print compiler.output_bytecode(state);
     return 0;
 }

@@ -226,6 +226,9 @@ typedef enum {
     OP_WRITEFILE,     // pop content, pop path, write file, push 1 on success
     OP_SYSTEM,        // pop command, execute via system(), push exit code
     OP_READLINE,      // read one line from stdin, push as string ("" on EOF)
+    OP_READFILEBYTES, // pop path, push file contents as int array (one int per byte)
+    OP_WRITEFILEBYTES,// pop byte array, pop path, write raw bytes, push 1 on success
+    OP_CHR,           // pop int, push 1-char string of that byte value
 } OpCode;
 
 typedef struct {
