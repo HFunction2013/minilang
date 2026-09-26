@@ -1,0 +1,232 @@
+// list.mil - array/list helpers for minilang
+//
+// Arrays in minilang have a fixed size, so "growing" operations return a new
+// array. Mutating helpers that only overwrite elements work in place.
+//
+//   require list;
+//   var a = list.range(0, 3);          // [0, 1, 2]
+//   var b = list.push(a, 4);           // [1, 2, 3, 4]
+//   println toString(list.indexOf(b, 3));
+
+// Build [lo, lo+1, ..., hi-1] (empty when hi <= lo)
+func range(lo, hi) {
+    var n = hi - lo;
+    if (n <= 0) { return array(0, 0); }
+    var a = array(n, 0);
+    var i = 0;
+    while (i < n) {
+        a[i] = lo + i;
+        i = i + 1;
+    }
+    return a;
+}
+// Copy an array
+func copy(a) {
+    var n = len(a);
+    var b = array(n, 0);
+    var i = 0;
+    while (i < n) {
+        b[i] = a[i];
+        i = i + 1;
+    }
+    return b;
+}
+// Append a value (returns a new array)
+func push(a, x) {
+    var n = len(a);
+    var b = array(n + 1, x);
+    var i = 0;
+    while (i < n) {
+        b[i] = a[i];
+        i = i + 1;
+    }
+    return b;
+}
+// Remove the last value (returns a new array)
+func pop(a) {
+    var n = len(a) - 1;
+    var b = array(n, 0);
+    var i = 0;
+    while (i < n) {
+        b[i] = a[i];
+        i = i + 1;
+    }
+    return b;
+}
+// Last element (empty array -> 0)
+func last(a) {
+    var n = len(a);
+    if (n == 0) { return 0; }
+    return a[n - 1];
+}
+// First element (empty array -> 0)
+func first(a) {
+    if (len(a) == 0) { return 0; }
+    return a[0];
+}
+// Insert x at index i (returns a new array); i out of range -> append
+func insert(a, i, x) {
+    var n = len(a);
+    if (i < 0) { i = 0; }
+    if (i > n) { i = n; }
+    var b = array(n + 1, x);
+    var j = 0;
+    while (j < i) {
+        b[j] = a[j];
+        j = j + 1;
+    }
+    while (j < n) {
+        b[j + 1] = a[j];
+        j = j + 1;
+    }
+    return b;
+}
+// Remove the element at index i (returns a new array)
+func remove(a, i) {
+    var n = len(a);
+    if (i < 0) { return copy(a); }
+    if (i >= n) { return copy(a); }
+    var b = array(n - 1, 0);
+    var j = 0;
+    var w = 0;
+    while (j < n) {
+        if (j != i) {
+            b[w] = a[j];
+            w = w + 1;
+        }
+        j = j + 1;
+    }
+    return b;
+}
+// Slice [start, end) (returns a new array)
+func slice(a, start, end) {
+    var n = len(a);
+    if (start < 0) { start = 0; }
+    if (end > n) { end = n; }
+    if (end < start) { end = start; }
+    var b = array(end - start, 0);
+    var i = start;
+    while (i < end) {
+        b[i - start] = a[i];
+        i = i + 1;
+    }
+    return b;
+}
+// Concatenate two arrays (returns a new array)
+func concat(a, b) {
+    var na = len(a);
+    var nb = len(b);
+    var c = array(na + nb, 0);
+    var i = 0;
+    while (i < na) {
+        c[i] = a[i];
+        i = i + 1;
+    }
+    i = 0;
+    while (i < nb) {
+        c[na + i] = b[i];
+        i = i + 1;
+    }
+    return c;
+}
+// Reverse (returns a new array)
+func reverse(a) {
+    var n = len(a);
+    var b = array(n, 0);
+    var i = 0;
+    while (i < n) {
+        b[i] = a[n - 1 - i];
+        i = i + 1;
+    }
+    return b;
+}
+// Index of the first occurrence of x, -1 when absent
+func indexOf(a, x) {
+    var i = 0;
+    while (i < len(a)) {
+        if (a[i] == x) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+// Index of the last occurrence of x, -1 when absent
+func lastIndexOf(a, x) {
+    var i = len(a) - 1;
+    while (i >= 0) {
+        if (a[i] == x) { return i; }
+        i = i - 1;
+    }
+    return -1;
+}
+func contains(a, x) { return indexOf(a, x) >= 0; }
+// Number of occurrences of x
+func count(a, x) {
+    var n = 0;
+    var i = 0;
+    while (i < len(a)) {
+        if (a[i] == x) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+// Sum of an int array
+func sum(a) {
+    var s = 0;
+    var i = 0;
+    while (i < len(a)) {
+        s = s + a[i];
+        i = i + 1;
+    }
+    return s;
+}
+// Smallest / largest element of an int array (empty -> 0)
+func min(a) {
+    if (len(a) == 0) { return 0; }
+    var m = a[0];
+    var i = 1;
+    while (i < len(a)) {
+        if (a[i] < m) { m = a[i]; }
+        i = i + 1;
+    }
+    return m;
+}
+func max(a) {
+    if (len(a) == 0) { return 0; }
+    var m = a[0];
+    var i = 1;
+    while (i < len(a)) {
+        if (a[i] > m) { m = a[i]; }
+        i = i + 1;
+    }
+    return m;
+}
+// Apply a single value to every slot: fill(n, x) == array(n, x)
+func fill(n, x) { return array(n, x); }
+// Join a string array with a separator
+func join(a, sep) {
+    var out = "";
+    var i = 0;
+    while (i < len(a)) {
+        if (i > 0) { out = out + sep; }
+        out = out + a[i];
+        i = i + 1;
+    }
+    return out;
+}
+// Swap two elements in place
+func swap(a, i, j) {
+    var t = a[i];
+    a[i] = a[j];
+    a[j] = t;
+    return a;
+}
+// Compare two arrays element by element (1 when equal length and values)
+func equal(a, b) {
+    if (len(a) != len(b)) { return 0; }
+    var i = 0;
+    while (i < len(a)) {
+        if (a[i] != b[i]) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}

@@ -170,7 +170,46 @@ require double from local in cwd; // 只从当前目录加载
 ### 内置模块
 
 - `syslib/math.mil`：`abs, min, max, clamp, pow, gcd, lcm, isEven, isOdd, sqrt, factorial, fib, cos, sin, pi`（三角函数按角度制，返回值放大 1000 倍）
-- `syslib/string.mil`：`isEmpty, startsWith, endsWith, contains, repeat, countChar, reverse, splitFirst`
+- `syslib/string.mil`：`isEmpty, startsWith, endsWith, contains, repeat, countChar, reverse, splitFirst, trim, trimLeft, trimRight, split, lines, words, join, indexOf, lastIndexOf, replace, drop, take, toUpper, toLower, capitalize, padLeft, padRight, isInt, isUpper, isLower`
+- `syslib/list.mil`：`range, copy, push, pop, first, last, insert, remove, slice, concat, reverse, indexOf, lastIndexOf, contains, count, sum, min, max, fill, join, swap, equal`
+- `syslib/sort.mil`：`ints, intsDesc, strings, insert, bsearch, bsearchStr, isSorted`（排序原地修改数组，因为数组按引用共享）
+- `syslib/json.mil`：JSON 解析与序列化（见下节）
+- `syslib/io.mil`：`read, write, append, exists, readLines, writeLines, appendLine, pathJoin, basename, dirname, ext, stem, withExt`
+- `syslib/rand.mil`：`seed, next, int, range, chance, pick, shuffle`（线性同余，同种子结果可复现）
+- `syslib/word.mil`：示例模块，演示嵌套 require
+
+### JSON
+
+`json.mil` 用带标签的二元组 `[type, payload]` 表示 JSON 值——minilang 只有 int/string/array/nil，没有哈希类型：
+
+| 类型 | 表示 |
+|------|------|
+| null | `[0, 0]` |
+| bool | `[1, 0]` / `[1, 1]` |
+| number | `[2, int]`（minilang 无浮点，小数部分截断，指数忽略） |
+| string | `[3, "text"]` |
+| array | `[4, [item, ...]]` |
+| object | `[5, [keys, vals]]`（keys 为字符串数组，vals 为带标签值数组） |
+
+```minilang
+require json;
+
+var v = json.parse("{\"name\": \"mini\", \"tags\": [\"a\", \"b\"], \"stars\": 128}");
+println json.stringify(v);                        // {"name": "mini", "tags": ["a", "b"], "stars": 128}
+println json.typeName(v);                         // object
+println json.toStr(json.get(v, "name"));          // mini
+println json.toStr(json.getPath(v, "tags.1"));    // b
+println toString(json.numVal(json.get(v, "stars")));  // 128
+print json.pretty(v, 2);                          // 缩进输出
+
+var o = json.obj();                               // 构造并序列化
+json.set(o, "ok", json.bool(1));
+println json.stringify(o);                        // {"ok": true}
+```
+
+常用函数：`parse / ok / error / stringify / pretty / quote / toStr`、`null / bool / num / str / arr / obj`、
+`type / typeName / isNull / isBool / isNum / isStr / isArr / isObj`、
+`val / numVal / strVal / boolVal / size / at / keys / values / indexOf / has / get / set / del / add / getPath`。
 
 ## REPL
 
@@ -326,7 +365,13 @@ minilang/
 ├── main.mil          # 纯 mil 实现的统一 CLI 入口（对应 main.c）
 ├── syslib/           # 内置模块库
 │   ├── math.mil      # 整数数学库
-│   └── string.mil    # 字符串工具库
+│   ├── string.mil    # 字符串工具库
+│   ├── list.mil      # 数组/列表工具库
+│   ├── sort.mil      # 排序与二分查找
+│   ├── json.mil      # JSON 解析与序列化
+│   ├── io.mil        # 文件与路径工具
+│   ├── rand.mil      # 可复现伪随机数
+│   └── word.mil      # 嵌套 require 示例
 ├── minilang.lsh      # LSH 语法高亮定义（microsoft/edit 格式）
 ├── requirements.txt  # Python 依赖（llvmlite）
 ├── ir_compile.py     # LLVM IR → .o 编译脚本（llvmlite）
@@ -337,7 +382,9 @@ minilang/
     ├── fib.mil
     ├── array_test.mil
     ├── require_test.mil
-    └── require_path.mil
+    ├── require_path.mil
+    ├── json_test.mil      # json.mil 测试
+    └── stdlib_test.mil    # string/list/sort/rand/io 测试
 ```
 
 ## 字节码格式

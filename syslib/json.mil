@@ -1,0 +1,622 @@
+// json.mil - JSON parser and serializer for minilang
+//
+// minilang has only int / string / array / nil and no hash type, so a JSON
+// value is represented as a self-describing tagged pair [type, payload]:
+//
+//   0 NULL : [0, 0]
+//   1 BOOL : [1, 0] or [1, 1]
+//   2 NUM  : [2, int]            // no floats in minilang: numbers are integers
+//   3 STR  : [3, "text"]
+//   4 ARR  : [4, [item, ...]]    // items are tagged values
+//   5 OBJ  : [5, [keys, vals]]   // keys: string array, vals: tagged array
+//
+// Typical use:
+//   require json;
+//   var v = json.parse("{\"a\": [1, 2, 3]}");
+//   println json.stringify(v);                                  // {"a": [1, 2, 3]}
+//   println json.stringify(json.get(v, "a"));                   // [1, 2, 3]
+//   println toString(json.numVal(json.at(json.get(v, "a"), 1))); // 2
+//   println json.pretty(v, 2);                                  // indented output
+//
+// Numbers: minilang integers only. A fractional part in the input is parsed
+// and truncated, an exponent is parsed and ignored.
+// Arrays and objects are appended by copying, so this targets small to
+// medium documents rather than multi-megabyte ones.
+var g_json_src = "";
+var g_json_pos = 0;
+var g_json_err = 0;
+var g_json_msg = "";
+
+// ===== Constructors =====
+func null() { return [0, 0]; }
+func bool(b) { if (b == 0) { return [1, 0]; } return [1, 1]; }
+func num(n) { return [2, n]; }
+func str(s) { return [3, s]; }
+func arr() { return [4, array(0, [0, 0])]; }
+func obj() { return [5, [array(0, ""), array(0, [0, 0])]]; }
+
+// ===== Type inspection =====
+func type(v) { return v[0]; }
+func isNull(v) { return v[0] == 0; }
+func isBool(v) { return v[0] == 1; }
+func isNum(v) { return v[0] == 2; }
+func isStr(v) { return v[0] == 3; }
+func isArr(v) { return v[0] == 4; }
+func isObj(v) { return v[0] == 5; }
+func typeName(v) {
+    var t = v[0];
+    if (t == 0) { return "null"; }
+    if (t == 1) { return "bool"; }
+    if (t == 2) { return "number"; }
+    if (t == 3) { return "string"; }
+    if (t == 4) { return "array"; }
+    if (t == 5) { return "object"; }
+    return "unknown";
+}
+
+// ===== Value access =====
+func val(v) { return v[1]; }
+func numVal(v) { return v[1]; }
+func strVal(v) { return v[1]; }
+func boolVal(v) { return v[1]; }
+
+// Number of elements (array) or members (object)
+func size(v) {
+    if (v[0] == 4) { return len(v[1]); }
+    if (v[0] == 5) { return len(v[1][0]); }
+    return 0;
+}
+
+// Element of an array at index i (out of range -> null)
+func at(v, i) {
+    if (v[0] != 4) { return [0, 0]; }
+    var items = v[1];
+    if (i < 0) { return [0, 0]; }
+    if (i >= len(items)) { return [0, 0]; }
+    return items[i];
+}
+
+// Object keys / values (arrays; empty for non-objects)
+func keys(v) {
+    if (v[0] != 5) { return array(0, ""); }
+    return v[1][0];
+}
+func values(v) {
+    if (v[0] != 5) { return array(0, [0, 0]); }
+    return v[1][1];
+}
+// Index of a key in an object, -1 when absent
+func indexOf(v, k) {
+    if (v[0] != 5) { return -1; }
+    var ks = v[1][0];
+    var i = 0;
+    while (i < len(ks)) {
+        if (ks[i] == k) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+func has(v, k) { return indexOf(v, k) >= 0; }
+// Object member by key (absent -> null)
+func get(v, k) {
+    var i = indexOf(v, k);
+    if (i < 0) { return [0, 0]; }
+    return v[1][1][i];
+}
+// Set/insert a member (in place, returns v)
+func set(v, k, x) {
+    var i = indexOf(v, k);
+    if (i < 0) {
+        var ks = jappend(v[1][0], k);
+        var vs = jappend(v[1][1], x);
+        v[1] = [ks, vs];
+        return v;
+    }
+    var vs2 = v[1][1];
+    vs2[i] = x;
+    return v;
+}
+// Remove a member (in place, returns v)
+func del(v, k) {
+    var i = indexOf(v, k);
+    if (i < 0) { return v; }
+    var ks = v[1][0];
+    var vs = v[1][1];
+    var n = len(ks) - 1;
+    var nk = array(n, "");
+    var nv = array(n, [0, 0]);
+    var j = 0;
+    var w = 0;
+    while (j < len(ks)) {
+        if (j != i) {
+            nk[w] = ks[j];
+            nv[w] = vs[j];
+            w = w + 1;
+        }
+        j = j + 1;
+    }
+    v[1] = [nk, nv];
+    return v;
+}
+// Append to an array value (in place, returns v)
+func add(v, item) {
+    if (v[0] != 4) { return v; }
+    v[1] = jappend(v[1], item);
+    return v;
+}
+// Walk a dotted path, e.g. json.getPath(v, "users.0.name")
+// Numeric segments index into arrays, others look up object keys.
+func getPath(v, path) {
+    var parts = jsplit(path, ".");
+    var cur = v;
+    var i = 0;
+    while (i < len(parts)) {
+        var p = parts[i];
+        if (cur[0] == 5) {
+            cur = get(cur, p);
+        } else {
+            if (cur[0] == 4) {
+                cur = at(cur, toInt(p));
+            } else {
+                return [0, 0];
+            }
+        }
+        i = i + 1;
+    }
+    return cur;
+}
+
+// ===== Parsing =====
+// parse: returns a tagged value; on failure returns null and ok() == 0
+func parse(s) {
+    g_json_src = s;
+    g_json_pos = 0;
+    g_json_err = 0;
+    g_json_msg = "";
+    var v = pvalue();
+    jskip();
+    if (g_json_err == 0) {
+        if (g_json_pos != len(s)) {
+            g_json_err = 1;
+            g_json_msg = "trailing data";
+        }
+    }
+    if (g_json_err != 0) { return [0, 0]; }
+    return v;
+}
+func ok() { return g_json_err == 0; }
+func error() { return g_json_msg; }
+
+// Skip whitespace
+func jskip() {
+    while (g_json_pos < len(g_json_src)) {
+        var c = charAt(g_json_src, g_json_pos);
+        if (c == 32) { g_json_pos = g_json_pos + 1; }
+        else if (c == 10) { g_json_pos = g_json_pos + 1; }
+        else if (c == 9) { g_json_pos = g_json_pos + 1; }
+        else if (c == 13) { g_json_pos = g_json_pos + 1; }
+        else { break; }
+    }
+    return 0;
+}
+
+func pvalue() {
+    jskip();
+    if (g_json_pos >= len(g_json_src)) {
+        g_json_err = 1;
+        g_json_msg = "unexpected end of input";
+        return [0, 0];
+    }
+    var c = charAt(g_json_src, g_json_pos);
+    if (c == 123) { return pobject(); }
+    if (c == 91) { return parray(); }
+    if (c == 34) { return [3, pstring()]; }
+    if (c == 116) {
+        if (substr(g_json_src, g_json_pos, 4) == "true") {
+            g_json_pos = g_json_pos + 4;
+            return [1, 1];
+        }
+        g_json_err = 1;
+        g_json_msg = "invalid literal";
+        return [0, 0];
+    }
+    if (c == 102) {
+        if (substr(g_json_src, g_json_pos, 5) == "false") {
+            g_json_pos = g_json_pos + 5;
+            return [1, 0];
+        }
+        g_json_err = 1;
+        g_json_msg = "invalid literal";
+        return [0, 0];
+    }
+    if (c == 110) {
+        if (substr(g_json_src, g_json_pos, 4) == "null") {
+            g_json_pos = g_json_pos + 4;
+            return [0, 0];
+        }
+        g_json_err = 1;
+        g_json_msg = "invalid literal";
+        return [0, 0];
+    }
+    return pnumber();
+}
+
+func pnumber() {
+    var neg = 0;
+    if (charAt(g_json_src, g_json_pos) == 45) {
+        neg = 1;
+        g_json_pos = g_json_pos + 1;
+    }
+    var n = 0;
+    var digits = 0;
+    while (g_json_pos < len(g_json_src)) {
+        var d = charAt(g_json_src, g_json_pos);
+        if (d < 48) { break; }
+        if (d > 57) { break; }
+        n = n * 10 + (d - 48);
+        digits = digits + 1;
+        g_json_pos = g_json_pos + 1;
+    }
+    // Fractional part: accepted and truncated (no floats in minilang)
+    if (charAt(g_json_src, g_json_pos) == 46) {
+        g_json_pos = g_json_pos + 1;
+        while (g_json_pos < len(g_json_src)) {
+            var d2 = charAt(g_json_src, g_json_pos);
+            if (d2 < 48) { break; }
+            if (d2 > 57) { break; }
+            g_json_pos = g_json_pos + 1;
+        }
+    }
+    // Exponent: accepted and ignored
+    var e = charAt(g_json_src, g_json_pos);
+    if (e == 101) {
+        g_json_pos = g_json_pos + 1;
+        jskipdigits();
+    } else {
+        if (e == 69) {
+            g_json_pos = g_json_pos + 1;
+            jskipdigits();
+        }
+    }
+    if (digits == 0) {
+        g_json_err = 1;
+        g_json_msg = "invalid value";
+        return [0, 0];
+    }
+    if (neg == 1) { n = 0 - n; }
+    return [2, n];
+}
+
+func jskipdigits() {
+    if (charAt(g_json_src, g_json_pos) == 43) { g_json_pos = g_json_pos + 1; }
+    else {
+        if (charAt(g_json_src, g_json_pos) == 45) { g_json_pos = g_json_pos + 1; }
+    }
+    while (g_json_pos < len(g_json_src)) {
+        var d = charAt(g_json_src, g_json_pos);
+        if (d < 48) { break; }
+        if (d > 57) { break; }
+        g_json_pos = g_json_pos + 1;
+    }
+    return 0;
+}
+
+// Parse a string literal; g_json_pos points at the opening quote
+func pstring() {
+    g_json_pos = g_json_pos + 1;
+    var out = "";
+    while (g_json_pos < len(g_json_src)) {
+        var c = charAt(g_json_src, g_json_pos);
+        if (c == 34) {
+            g_json_pos = g_json_pos + 1;
+            break;
+        }
+        if (c == 92) {
+            g_json_pos = g_json_pos + 1;
+            var e = charAt(g_json_src, g_json_pos);
+            g_json_pos = g_json_pos + 1;
+            if (e == 110) { out = out + chr(10); }
+            else if (e == 116) { out = out + chr(9); }
+            else if (e == 114) { out = out + chr(13); }
+            else if (e == 98) { out = out + chr(8); }
+            else if (e == 102) { out = out + chr(12); }
+            else if (e == 34) { out = out + chr(34); }
+            else if (e == 92) { out = out + chr(92); }
+            else if (e == 47) { out = out + chr(47); }
+            else if (e == 117) {
+                var cp = phex4();
+                // Surrogate pair -> code point above 0xFFFF
+                if (cp >= 55296) {
+                    if (cp <= 56319) {
+                        if (substr(g_json_src, g_json_pos, 2) == "\\u") {
+                            g_json_pos = g_json_pos + 2;
+                            var lo = phex4();
+                            cp = 65536 + (cp - 55296) * 1024 + (lo - 56320);
+                        }
+                    }
+                }
+                out = out + jutf8(cp);
+            }
+            else { out = out + chr(e); }
+        } else {
+            out = out + chr(c);
+            g_json_pos = g_json_pos + 1;
+        }
+    }
+    return out;
+}
+
+func phex4() {
+    var v = 0;
+    var i = 0;
+    while (i < 4) {
+        var c = charAt(g_json_src, g_json_pos + i);
+        var d = 0;
+        if (c >= 48) {
+            if (c <= 57) { d = c - 48; }
+            else if (c >= 97) {
+                if (c <= 102) { d = c - 87; }
+                else { g_json_err = 1; g_json_msg = "invalid unicode escape"; }
+            } else if (c >= 65) {
+                if (c <= 70) { d = c - 55; }
+                else { g_json_err = 1; g_json_msg = "invalid unicode escape"; }
+            } else {
+                g_json_err = 1;
+                g_json_msg = "invalid unicode escape";
+            }
+        } else {
+            g_json_err = 1;
+            g_json_msg = "invalid unicode escape";
+        }
+        v = v * 16 + d;
+        i = i + 1;
+    }
+    g_json_pos = g_json_pos + 4;
+    return v;
+}
+
+func parray() {
+    g_json_pos = g_json_pos + 1;
+    var items = array(0, [0, 0]);
+    jskip();
+    if (charAt(g_json_src, g_json_pos) == 93) {
+        g_json_pos = g_json_pos + 1;
+        return [4, items];
+    }
+    while (g_json_err == 0) {
+        var v = pvalue();
+        items = jappend(items, v);
+        jskip();
+        var c = charAt(g_json_src, g_json_pos);
+        if (c == 44) {
+            g_json_pos = g_json_pos + 1;
+        } else if (c == 93) {
+            g_json_pos = g_json_pos + 1;
+            break;
+        } else {
+            g_json_err = 1;
+            g_json_msg = "expected ',' or ']'";
+        }
+    }
+    return [4, items];
+}
+
+func pobject() {
+    g_json_pos = g_json_pos + 1;
+    var ks = array(0, "");
+    var vs = array(0, [0, 0]);
+    jskip();
+    if (charAt(g_json_src, g_json_pos) == 125) {
+        g_json_pos = g_json_pos + 1;
+        return [5, [ks, vs]];
+    }
+    while (g_json_err == 0) {
+        jskip();
+        if (charAt(g_json_src, g_json_pos) != 34) {
+            g_json_err = 1;
+            g_json_msg = "expected object key";
+            break;
+        }
+        var k = pstring();
+        jskip();
+        if (charAt(g_json_src, g_json_pos) != 58) {
+            g_json_err = 1;
+            g_json_msg = "expected ':'";
+            break;
+        }
+        g_json_pos = g_json_pos + 1;
+        var v = pvalue();
+        var old = jfind(ks, k);
+        if (old >= 0) {
+            vs[old] = v;
+        } else {
+            ks = jappend(ks, k);
+            vs = jappend(vs, v);
+        }
+        jskip();
+        var c = charAt(g_json_src, g_json_pos);
+        if (c == 44) {
+            g_json_pos = g_json_pos + 1;
+        } else if (c == 125) {
+            g_json_pos = g_json_pos + 1;
+            break;
+        } else {
+            g_json_err = 1;
+            g_json_msg = "expected ',' or '}'";
+        }
+    }
+    return [5, [ks, vs]];
+}
+
+// ===== Serialization =====
+func stringify(v) { return jser(v, -1, 0); }
+// pretty(v, 2): multi-line output indented by `ind` spaces per level
+func pretty(v, ind) { return jser(v, ind, 0); }
+
+// Escape a string as a JSON string literal (including the quotes)
+func quote(s) {
+    var out = "\"";
+    var i = 0;
+    while (i < len(s)) {
+        var c = charAt(s, i);
+        if (c == 34) { out = out + "\\\""; }
+        else if (c == 92) { out = out + "\\\\"; }
+        else if (c == 10) { out = out + "\\n"; }
+        else if (c == 9) { out = out + "\\t"; }
+        else if (c == 13) { out = out + "\\r"; }
+        else if (c == 8) { out = out + "\\b"; }
+        else if (c == 12) { out = out + "\\f"; }
+        else if (c < 32) { out = out + "\\u" + jhex4(c); }
+        else { out = out + chr(c); }
+        i = i + 1;
+    }
+    return out + "\"";
+}
+
+func jser(v, ind, depth) {
+    var t = v[0];
+    if (t == 0) { return "null"; }
+    if (t == 1) {
+        if (v[1] == 1) { return "true"; }
+        return "false";
+    }
+    if (t == 2) { return toString(v[1]); }
+    if (t == 3) { return quote(v[1]); }
+    if (t == 4) { return jserArr(v[1], ind, depth); }
+    if (t == 5) { return jserObj(v[1], ind, depth); }
+    return "null";
+}
+
+func jserArr(items, ind, depth) {
+    var n = len(items);
+    if (n == 0) { return "[]"; }
+    var out = "";
+    var i = 0;
+    if (ind < 0) {
+        out = "[";
+        while (i < n) {
+            if (i > 0) { out = out + ", "; }
+            out = out + jser(items[i], ind, depth + 1);
+            i = i + 1;
+        }
+        return out + "]";
+    }
+    out = "[\n";
+    while (i < n) {
+        out = out + jrep(" ", ind * (depth + 1)) + jser(items[i], ind, depth + 1);
+        if (i < n - 1) { out = out + ","; }
+        out = out + "\n";
+        i = i + 1;
+    }
+    return out + jrep(" ", ind * depth) + "]";
+}
+
+func jserObj(kv, ind, depth) {
+    var ks = kv[0];
+    var vs = kv[1];
+    var n = len(ks);
+    if (n == 0) { return "{}"; }
+    var out = "";
+    var i = 0;
+    if (ind < 0) {
+        out = "{";
+        while (i < n) {
+            if (i > 0) { out = out + ", "; }
+            out = out + quote(ks[i]) + ": " + jser(vs[i], ind, depth + 1);
+            i = i + 1;
+        }
+        return out + "}";
+    }
+    out = "{\n";
+    while (i < n) {
+        out = out + jrep(" ", ind * (depth + 1)) + quote(ks[i]) + ": " + jser(vs[i], ind, depth + 1);
+        if (i < n - 1) { out = out + ","; }
+        out = out + "\n";
+        i = i + 1;
+    }
+    return out + jrep(" ", ind * depth) + "}";
+}
+
+// Human-readable form of a scalar: number -> digits, string -> raw text,
+// bool -> true/false, null -> empty, container -> compact JSON
+func toStr(v) {
+    var t = v[0];
+    if (t == 2) { return toString(v[1]); }
+    if (t == 3) { return v[1]; }
+    if (t == 1) {
+        if (v[1] == 1) { return "true"; }
+        return "false";
+    }
+    if (t == 0) { return ""; }
+    return stringify(v);
+}
+
+// ===== Internal helpers =====
+// Append to an array (returns a new array, since arrays are fixed size)
+func jappend(a, item) {
+    var n = len(a);
+    var b = array(n + 1, item);
+    var i = 0;
+    while (i < n) {
+        b[i] = a[i];
+        i = i + 1;
+    }
+    return b;
+}
+func jfind(a, x) {
+    var i = 0;
+    while (i < len(a)) {
+        if (a[i] == x) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+func jrep(s, n) {
+    var r = "";
+    var i = 0;
+    while (i < n) {
+        r = r + s;
+        i = i + 1;
+    }
+    return r;
+}
+func jhex4(n) {
+    var d = "0123456789abcdef";
+    return substr(d, (n / 4096) % 16, 1) + substr(d, (n / 256) % 16, 1) + substr(d, (n / 16) % 16, 1) + substr(d, n % 16, 1);
+}
+// Split on a separator (empty separator -> single-element array)
+func jsplit(s, sep) {
+    var out = array(0, "");
+    var bl = len(sep);
+    if (bl == 0) { return jappend(out, s); }
+    var cur = "";
+    var i = 0;
+    var sl = len(s);
+    while (i < sl) {
+        if (i + bl <= sl) {
+            if (substr(s, i, bl) == sep) {
+                out = jappend(out, cur);
+                cur = "";
+                i = i + bl;
+            } else {
+                cur = cur + chr(charAt(s, i));
+                i = i + 1;
+            }
+        } else {
+            cur = cur + chr(charAt(s, i));
+            i = i + 1;
+        }
+    }
+    return jappend(out, cur);
+}
+// Encode a Unicode code point as UTF-8 bytes
+func jutf8(cp) {
+    if (cp < 128) { return chr(cp); }
+    if (cp < 2048) {
+        return chr(192 + cp / 64) + chr(128 + cp % 64);
+    }
+    if (cp < 65536) {
+        return chr(224 + cp / 4096) + chr(128 + (cp / 64) % 64) + chr(128 + cp % 64);
+    }
+    return chr(240 + cp / 262144) + chr(128 + (cp / 4096) % 64) + chr(128 + (cp / 64) % 64) + chr(128 + cp % 64);
+}

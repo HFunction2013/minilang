@@ -598,9 +598,7 @@ func run_vm() {
             var sizev = pop();
             var sz = sizev[1];
             if (sz < 0) { sz = 0; }
-            var arr_sz = sz;
-            if (arr_sz < 1) { arr_sz = 1; }
-            var new_arr = array(arr_sz, init);
+            var new_arr = array(sz, init);
             push(v_arr(new_arr));
         } else if (op == OP_ARGC) {
             push(v_int(g_prog_argc));

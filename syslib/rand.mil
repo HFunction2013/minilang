@@ -1,0 +1,63 @@
+// rand.mil - deterministic pseudo-random numbers for minilang
+//
+// A linear congruential generator, so results are reproducible: the same seed
+// always produces the same sequence (handy for tests).
+//
+//   require rand;
+//   rand.seed(42);
+//   println toString(rand.range(1, 7));    // 1..6
+//   var deck = [1, 2, 3, 4];
+//   rand.shuffle(deck);
+var g_rand_state = 1;
+
+// Set the seed (also returns it)
+func seed(n) {
+    g_rand_state = n % 2147483647;
+    if (g_rand_state <= 0) { g_rand_state = g_rand_state + 2147483646; }
+    return g_rand_state;
+}
+
+// Next raw value in [1, 2147483646]
+func next() {
+    g_rand_state = (g_rand_state * 1103515245 + 12345) % 2147483647;
+    if (g_rand_state <= 0) { g_rand_state = g_rand_state + 2147483646; }
+    return g_rand_state;
+}
+
+// Random int in [0, n)
+func int(n) {
+    if (n <= 0) { return 0; }
+    return next() % n;
+}
+
+// Random int in [lo, hi)
+func range(lo, hi) {
+    if (hi <= lo) { return lo; }
+    return lo + next() % (hi - lo);
+}
+
+// True with the given percentage chance (0..100)
+func chance(pct) {
+    if (pct <= 0) { return 0; }
+    if (pct >= 100) { return 1; }
+    return (next() % 100) < pct;
+}
+
+// A random element of an array (empty array -> 0)
+func pick(a) {
+    if (len(a) == 0) { return 0; }
+    return a[next() % len(a)];
+}
+
+// Fisher-Yates shuffle in place; returns the same array
+func shuffle(a) {
+    var i = len(a) - 1;
+    while (i > 0) {
+        var j = next() % (i + 1);
+        var t = a[i];
+        a[i] = a[j];
+        a[j] = t;
+        i = i - 1;
+    }
+    return a;
+}

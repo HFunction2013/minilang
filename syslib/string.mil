@@ -54,7 +54,7 @@ func reverse(s) {
     var r = "";
     var i = len(s) - 1;
     while (i >= 0) {
-        r = r + charAt(s, i);
+        r = r + chr(charAt(s, i));
         i = i - 1;
     }
     return r;
@@ -73,4 +73,283 @@ func splitFirst(s, sep) {
         i = i + 1;
     }
     return s;
+}
+
+// ===== Whitespace =====
+func isSpace(c) {
+    if (c == 32) { return 1; }
+    if (c == 10) { return 1; }
+    if (c == 9) { return 1; }
+    if (c == 13) { return 1; }
+    if (c == 11) { return 1; }
+    if (c == 12) { return 1; }
+    return 0;
+}
+
+func trimLeft(s) {
+    var i = 0;
+    while (i < len(s)) {
+        if (isSpace(charAt(s, i)) == 1) { i = i + 1; }
+        else { break; }
+    }
+    return substr(s, i, len(s) - i);
+}
+
+func trimRight(s) {
+    var i = len(s) - 1;
+    while (i >= 0) {
+        if (isSpace(charAt(s, i)) == 1) { i = i - 1; }
+        else { break; }
+    }
+    return substr(s, 0, i + 1);
+}
+
+func trim(s) {
+    return trimRight(trimLeft(s));
+}
+
+// ===== Splitting / joining =====
+// Split on a separator (empty separator -> one element holding the whole text)
+func split(s, sep) {
+    var out = array(0, "");
+    var bl = len(sep);
+    if (bl == 0) { return spush(out, s); }
+    var cur = "";
+    var i = 0;
+    var sl = len(s);
+    while (i < sl) {
+        if (i + bl <= sl) {
+            if (substr(s, i, bl) == sep) {
+                out = spush(out, cur);
+                cur = "";
+                i = i + bl;
+            } else {
+                cur = cur + chr(charAt(s, i));
+                i = i + 1;
+            }
+        } else {
+            cur = cur + chr(charAt(s, i));
+            i = i + 1;
+        }
+    }
+    return spush(out, cur);
+}
+
+// Split on line breaks ("\n" and "\r\n")
+func lines(s) {
+    var t = replace(s, "\r\n", "\n");
+    t = replace(t, "\r", "\n");
+    return split(t, "\n");
+}
+
+// Split on runs of whitespace, skipping empties
+func words(s) {
+    var parts = split(replace(replace(replace(s, "\n", " "), "\t", " "), "\r", " "), " ");
+    var out = array(0, "");
+    var i = 0;
+    while (i < len(parts)) {
+        if (len(parts[i]) > 0) { out = spush(out, parts[i]); }
+        i = i + 1;
+    }
+    return out;
+}
+
+// Join a string array with a separator
+func join(a, sep) {
+    var out = "";
+    var i = 0;
+    while (i < len(a)) {
+        if (i > 0) { out = out + sep; }
+        out = out + a[i];
+        i = i + 1;
+    }
+    return out;
+}
+
+// ===== Search =====
+// Index of the first occurrence of sub, -1 when absent
+func indexOf(s, sub) {
+    var bl = len(sub);
+    if (bl == 0) { return 0; }
+    var sl = len(s);
+    if (bl > sl) { return -1; }
+    var i = 0;
+    while (i <= sl - bl) {
+        if (substr(s, i, bl) == sub) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Index of the last occurrence of sub, -1 when absent
+func lastIndexOf(s, sub) {
+    var bl = len(sub);
+    var sl = len(s);
+    if (bl == 0) { return sl; }
+    if (bl > sl) { return -1; }
+    var i = sl - bl;
+    while (i >= 0) {
+        if (substr(s, i, bl) == sub) { return i; }
+        i = i - 1;
+    }
+    return -1;
+}
+
+// ===== Rewriting =====
+// Replace every occurrence of `pat` with `to`
+func replace(s, pat, to) {
+    var bl = len(pat);
+    if (bl == 0) { return s; }
+    var out = "";
+    var i = 0;
+    var sl = len(s);
+    while (i < sl) {
+        if (i + bl <= sl) {
+            if (substr(s, i, bl) == pat) {
+                out = out + to;
+                i = i + bl;
+            } else {
+                out = out + chr(charAt(s, i));
+                i = i + 1;
+            }
+        } else {
+            out = out + chr(charAt(s, i));
+            i = i + 1;
+        }
+    }
+    return out;
+}
+
+// Remove the first `n` characters
+func drop(s, n) {
+    if (n >= len(s)) { return ""; }
+    if (n < 0) { return s; }
+    return substr(s, n, len(s) - n);
+}
+
+// Keep only the first `n` characters
+func take(s, n) {
+    if (n > len(s)) { n = len(s); }
+    if (n < 0) { return ""; }
+    return substr(s, 0, n);
+}
+
+// ===== Case =====
+func toUpper(s) {
+    var out = "";
+    var i = 0;
+    while (i < len(s)) {
+        var c = charAt(s, i);
+        if (c >= 97) {
+            if (c <= 122) { out = out + chr(c - 32); }
+            else { out = out + chr(c); }
+        } else {
+            out = out + chr(c);
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+func toLower(s) {
+    var out = "";
+    var i = 0;
+    while (i < len(s)) {
+        var c = charAt(s, i);
+        if (c >= 65) {
+            if (c <= 90) { out = out + chr(c + 32); }
+            else { out = out + chr(c); }
+        } else {
+            out = out + chr(c);
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// Upper-case the first letter of every whitespace-separated word
+func capitalize(s) {
+    var parts = split(s, " ");
+    var out = "";
+    var i = 0;
+    while (i < len(parts)) {
+        if (i > 0) { out = out + " "; }
+        var w = parts[i];
+        if (len(w) > 0) {
+            out = out + toUpper(substr(w, 0, 1)) + substr(w, 1, len(w) - 1);
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// ===== Padding =====
+func padLeft(s, n, c) {
+    var out = s;
+    while (len(out) < n) {
+        out = c + out;
+    }
+    return out;
+}
+
+func padRight(s, n, c) {
+    var out = s;
+    while (len(out) < n) {
+        out = out + c;
+    }
+    return out;
+}
+
+// ===== Predicates =====
+func isInt(s) {
+    var n = len(s);
+    if (n == 0) { return 0; }
+    var i = 0;
+    if (charAt(s, 0) == 45) {
+        i = 1;
+        if (n == 1) { return 0; }
+    }
+    while (i < n) {
+        var c = charAt(s, i);
+        if (c < 48) { return 0; }
+        if (c > 57) { return 0; }
+        i = i + 1;
+    }
+    return 1;
+}
+
+func isUpper(s) {
+    var i = 0;
+    while (i < len(s)) {
+        var c = charAt(s, i);
+        if (c >= 97) {
+            if (c <= 122) { return 0; }
+        }
+        i = i + 1;
+    }
+    return len(s) > 0;
+}
+
+func isLower(s) {
+    var i = 0;
+    while (i < len(s)) {
+        var c = charAt(s, i);
+        if (c >= 65) {
+            if (c <= 90) { return 0; }
+        }
+        i = i + 1;
+    }
+    return len(s) > 0;
+}
+
+// Internal: append to a string array (arrays are fixed size)
+func spush(a, x) {
+    var n = len(a);
+    var b = array(n + 1, x);
+    var i = 0;
+    while (i < n) {
+        b[i] = a[i];
+        i = i + 1;
+    }
+    return b;
 }

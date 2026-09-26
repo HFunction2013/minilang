@@ -1,0 +1,85 @@
+require json;
+
+func main() {
+    // --- parse scalars ---
+    println json.stringify(json.parse("42"));
+    println json.stringify(json.parse("-7"));
+    println json.stringify(json.parse("true"));
+    println json.stringify(json.parse("false"));
+    println json.stringify(json.parse("null"));
+    println json.stringify(json.parse("\"hi\\nthere\""));
+
+    // --- parse containers ---
+    var v = json.parse("{\"name\": \"mini\", \"ver\": 1, \"tags\": [\"a\", \"b\"], \"on\": true, \"nil\": null}");
+    println json.stringify(v);
+    println json.typeName(v);
+    println toString(json.size(v));
+    println json.toStr(json.get(v, "name"));
+    println json.stringify(json.get(v, "tags"));
+    println toString(json.numVal(json.get(v, "ver")));
+    println toString(json.boolVal(json.get(v, "on")));
+    println json.typeName(json.get(v, "nil"));
+    println json.stringify(json.at(json.get(v, "tags"), 1));
+    println json.stringify(json.get(v, "missing"));
+    println toString(json.has(v, "name"));
+    println toString(json.has(v, "nope"));
+
+    // --- numbers: fraction truncated, exponent ignored ---
+    println json.stringify(json.parse("3.99"));
+    println json.stringify(json.parse("-2.5"));
+    println json.stringify(json.parse("1e3"));
+
+    // --- nested + path ---
+    var doc = json.parse("{\"users\": [{\"name\": \"ann\", \"age\": 30}, {\"name\": \"bob\", \"age\": 25}]}");
+    println json.toStr(json.getPath(doc, "users.1.name"));
+    println json.toStr(json.getPath(doc, "users.0.age"));
+    println json.toStr(json.getPath(doc, "users.9.name"));
+
+    // --- build and serialize ---
+    var o = json.obj();
+    json.set(o, "title", json.str("minilang"));
+    json.set(o, "stars", json.num(128));
+    json.set(o, "open", json.bool(1));
+    var list = json.arr();
+    json.add(list, json.num(1));
+    json.add(list, json.str("two"));
+    json.add(list, json.bool(0));
+    json.set(o, "items", list);
+    println json.stringify(o);
+    json.set(o, "stars", json.num(256));
+    println json.stringify(o);
+    json.del(o, "open");
+    println json.stringify(o);
+
+    // --- keys / values ---
+    var ks = json.keys(o);
+    var i = 0;
+    while (i < len(ks)) {
+        println ks[i];
+        i = i + 1;
+    }
+    println toString(json.size(o));
+
+    // --- pretty print ---
+    print json.pretty(v, 2);
+
+    // --- escapes and unicode ---
+    println json.stringify(json.parse("\"a\\\"b\\\\c\\td\""));
+    println json.quote("line1\nline2");
+    println json.stringify(json.parse("\"\\u4e16\\u754c\""));
+    println json.stringify(json.parse("\"\\ud83d\\ude00\""));
+
+    // --- errors ---
+    var bad = json.parse("{\"a\": }");
+    println toString(json.ok());
+    println json.error();
+    var bad2 = json.parse("[1, 2");
+    println toString(json.ok());
+    var good = json.parse("  [1, 2]  ");
+    println toString(json.ok());
+    println json.stringify(good);
+
+    // --- whitespace tolerance ---
+    println json.stringify(json.parse("{\n  \"a\" : [ 1 , 2 ]\n}"));
+    return 0;
+}
