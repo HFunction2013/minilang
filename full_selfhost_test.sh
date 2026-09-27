@@ -15,6 +15,8 @@ make 2>&1 | grep -E "error|Error" || true
 echo ""
 PASS=0
 FAIL=0
+REPO=$(cd "$(dirname "$0")" && pwd)
+TMPMOD=$(mktemp -d)
 check() {
     if [ "$1" = "$2" ]; then
         echo "  PASS: $3"
@@ -223,6 +225,30 @@ if [ -f main ]; then
 else
     check "FAIL" "OK" "boot builds main.mil natively"
 fi
+
+echo ""
+echo "=== 13. Module resolution is independent of the working directory ==="
+# syslib/ lives next to the minilang executable, so `require` must work no
+# matter where you run from (this used to break on macOS, where /proc/self/exe
+# does not exist and the search path fell back to "syslib" relative to cwd).
+mkdir -p "$TMPMOD/sub"
+cat > "$TMPMOD/sub/prog.mil" <<'EOF'
+require math;
+require word in syslib;
+func main() {
+    println math.abs(0 - 5);
+    println word.shout("hi");
+    return 0;
+}
+EOF
+EXPECTED=$(printf '5\nhi!\n')
+(cd "$TMPMOD/sub" && "$REPO/minilang" run prog.mil > /tmp/sh_mod_sub.out 2>&1)
+check "$(cat /tmp/sh_mod_sub.out)" "$EXPECTED" "require resolves from the script directory"
+(cd / && "$REPO/minilang" run "$TMPMOD/sub/prog.mil" > /tmp/sh_mod_root.out 2>&1)
+check "$(cat /tmp/sh_mod_root.out)" "$EXPECTED" "require resolves from /"
+(cd "$TMPMOD" && "$REPO/minilang" run "$REPO/main.mil" run "$TMPMOD/sub/prog.mil" > /tmp/sh_mod_mil.out 2>&1)
+check "$(cat /tmp/sh_mod_mil.out)" "$EXPECTED" "mil-side main.mil resolves syslib too"
+rm -rf "$TMPMOD"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

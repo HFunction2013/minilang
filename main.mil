@@ -1,8 +1,8 @@
 // main.mil - Unified minilang toolchain entry point, fully self-hosted
 // Replaces main.c. Requires compiler.mil, vm.mil, llvm_gen.mil.
 // Usage: ./minilang run main.mil <command> [args...]
-//   run <file>           Compile .mil and run, or run precompiled text bytecode
-//   dump-text <file>     Compile and dump text bytecode
+//   run <file>           Compile .mil and run, or run precompiled .milc/text bytecode
+//   dump-text <file>     Compile and dump text bytecode (or read a .milc file)
 //   llvm <file>          Compile and output LLVM IR
 //   build [opts] <file>  Compile to native executable or bytecode file
 //     -b, --bytecode     write binary bytecode file (.milc, magic "!milc")
@@ -15,8 +15,8 @@ func print_usage() {
     println "Usage: main <command> [args...]";
     println "Commands:";
     println "  run <file>           Compile and run .mil (or run text bytecode)";
-    println "  bytecode <file>      Compile and dump bytecode (human readable)";
-    println "  dump-text <file>     Compile and dump text bytecode";
+    println "  bytecode <file>      Disassemble .mil, or read a .milc bytecode file";
+    println "  dump-text <file>     Text bytecode for .mil, or read a .milc bytecode file";
     println "  llvm <file>          Compile to LLVM IR";
     println "  repl                 Start interactive REPL";
     println "  self-test            Run self-hosting verification";
@@ -28,9 +28,24 @@ func is_bytecode_text(src) {
     if (len(src) < 10) { return 0; }
     return strcmp(substr(src, 0, 10), "MINILANGBC") == 0;
 }
+// syslib ships next to main.mil. Work out where that is from our own path, so
+// that `main.mil run sub/x.mil` finds it from any working directory. Falls back
+// to the cwd-relative "syslib" when it cannot be determined.
+var g_syslib_dir = "syslib";
+func find_syslib_dir() {
+    if (argc() > 0) {
+        var d = compiler.dirname(argv(0));
+        if (d != ".") {
+            var cand = d + "/syslib";
+            if (fileExists(cand + "/math.mil") == 1) { return cand; }
+        }
+    }
+    return "syslib";
+}
 func parse_source(file, src) {
     var state = compiler.make_state(src);
     state[28] = compiler.dirname(file);
+    state[29] = g_syslib_dir;
     compiler.lex_source(state);
     compiler.parse_program(state);
     return state;
@@ -104,6 +119,44 @@ func cmd_run(n) {
     vm.run_bytecode(bc_text);
     return 0;
 }
+// Convert a decoded .milc program (9-slot layout) into the compiler-state
+// layout that compiler.output_bytecode and the disassembly printer consume.
+// Constants are re-tagged: [1,v] -> [0,v,""] (int), [2,s] -> [1,0,s] (string),
+// and nil constants become [0,0,""] to match how nil is emitted as "0 0".
+func state_from_prog(prog) {
+    var const_count = prog[0];
+    var raw = prog[1];
+    var consts = array(const_count + 1, 0);
+    var i = 0;
+    while (i < const_count) {
+        var c = raw[i];
+        if (c[0] == 1) {
+            consts[i] = [0, c[1], ""];
+        } else if (c[0] == 2) {
+            consts[i] = [1, 0, c[1]];
+        } else {
+            consts[i] = [0, 0, ""];
+        }
+        i = i + 1;
+    }
+    var st = array(17, 0);
+    st[6] = consts;
+    st[7] = const_count;
+    st[8] = [prog[3], prog[4], prog[5], prog[6], prog[2]];
+    st[10] = prog[8];
+    st[11] = prog[7] * 3;
+    return st;
+}
+// Load a .milc file into a compiler-state-like structure, or compile a .mil source
+func load_or_parse(file, src) {
+    if (is_milc_binary(src)) {
+        return state_from_prog(milc_io.decode_bytes(readFileBytes(file)));
+    }
+    var st = parse_source(file, src);
+    compiler.compile_program(st);
+    return st;
+}
+
 func cmd_dump_text(n) {
     if (n < 3) {
         println "Error: dump-text requires a filename";
@@ -113,6 +166,10 @@ func cmd_dump_text(n) {
     var src = readFile(file);
     if (is_bytecode_text(src)) {
         print src;
+        return 0;
+    }
+    if (is_milc_binary(src)) {
+        print compiler.output_bytecode(state_from_prog(milc_io.decode_bytes(readFileBytes(file))));
         return 0;
     }
     var bc = compile_to_bytecode(file, src);
@@ -255,6 +312,10 @@ func opcode_name(op) {
     names[44] = "FILEEXISTS";
     names[45] = "WRITEFILE";
     names[46] = "SYSTEM";
+    names[47] = "READLINE";
+    names[48] = "READFILEBYTES";
+    names[49] = "WRITEFILEBYTES";
+    names[50] = "CHR";
     return names[op];
 }
 // Right-align a number in a field of width w (matches boot %6d)
@@ -281,8 +342,7 @@ func cmd_bytecode(n) {
     }
     var file = argv(2);
     var src = readFile(file);
-    var state = parse_source(file, src);
-    compiler.compile_program(state);
+    var state = load_or_parse(file, src);
     // Constants
     println "=== Constants (" + toString(state[7]) + ") ===";
     var i = 0;
@@ -405,6 +465,7 @@ func cmd_repl() {
 }
 func main() {
     var n = argc();
+    g_syslib_dir = find_syslib_dir();
     if (n < 2) {
         print_usage();
         return 1;

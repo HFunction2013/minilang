@@ -48,11 +48,13 @@ pip install -r requirements.txt
 ./minilang run tests/hello.mil
 ./minilang run tests/hello.milc
 
-# 2. 输出人类可读的字节码反汇编
+# 2. 输出人类可读的字节码反汇编（.mil 或 .milc 均可）
 ./minilang bytecode tests/hello.mil
+./minilang bytecode tests/hello.milc
 
-# 3. 输出自举对比用的文本格式字节码
+# 3. 输出自举对比用的文本格式字节码（.mil 或 .milc 均可）
 ./minilang dump-text tests/hello.mil
+./minilang dump-text tests/hello.milc
 
 # 4. 输出 LLVM IR (.ll 文件)
 ./minilang llvm tests/hello.mil
@@ -344,6 +346,24 @@ diff /tmp/boot.txt /tmp/selfhost.txt  # 完全一致
 ./minilang run main.mil run tests/hello.milc      # mil 版直接解析二进制字节码并运行
 ```
 
+## 编辑器支持
+
+VS Code / Cursor 扩展在**独立仓库** `minilang-vscode` 中维护，两者按各自的 tag 分别发版：
+
+- 语法高亮（`.mil` 源码）
+- 输入时实时诊断——调用真实的 `minilang` 工具链，把 `Parse error line N` 标到对应行
+- 悬停文档、补全、签名提示、跳转到定义、代码片段
+- 命令：终端运行、REPL、字节码反汇编、dump-text、LLVM IR、build -b / -e
+- **`.milc` 查看器**：`.milc` 是二进制字节码，插件为 `*.milc` 注册了自定义编辑器并设为默认，
+  **双击即直接打开**，可在 Text Bytecode（`dump-text` 的 MINILANGBC 格式）与
+  Bytecode Assembly（`bytecode` 反汇编）之间切换
+
+扩展会调用本仓库 `make` 出来的 `minilang` 可执行文件（在设置里可用 `minilang.path` 指定）。
+**升级扩展后请重新 `make`**：读取 `.milc` 是较新的 CLI 能力，旧二进制会把字节码当源码解析
+并报 `Unexpected character`。
+
+安装与开发见 `minilang-vscode` 仓库的 README。
+
 ## 项目结构
 
 ```
@@ -385,6 +405,9 @@ minilang/
     ├── require_path.mil
     ├── json_test.mil      # json.mil 测试
     └── stdlib_test.mil    # string/list/sort/rand/io 测试
+
+
+编辑器扩展（VS Code / Cursor）在独立仓库 `minilang-vscode`。
 ```
 
 ## 字节码格式
@@ -410,5 +433,8 @@ MINILANGBC
 - **VM 栈管理**：OP_STORE/OP_STORE_GLOBAL/OP_PRINT/OP_PRINTLN 均弹出栈顶值，确保语句级栈平衡
 - **break 实现**：循环进入时记录 break 位置栈起点，退出时回填所有 break 跳转地址，嵌套循环通过 loop_stack 隔离
 - **全局变量**：顶层 var 声明收集为全局变量，在 init 段初始化（地址 0 为 JMP 到 init 段）
-- **模块系统**：require 在解析阶段加载模块源码，函数以 `模块名.函数名` 命名并注册，模块内部互调也加上前缀；别名（`require f from m`）建立 `f` → `m.f` 映射，字节码和 LLVM 后端统一解析
+- **模块系统**：require 在解析阶段加载模块源码；`syslib/` 按**可执行文件所在目录**定位
+  （Linux 走 `/proc/self/exe`，macOS 走 `_NSGetExecutablePath`，最后回退到 argv[0] 并沿 PATH 查找），
+  因此从任何工作目录运行都能找到标准库；脚本目录取绝对路径，同目录 `require` 也不受 cwd 影响。
+  仍可用 `MINILANG_DIR` 环境变量显式覆盖，函数以 `模块名.函数名` 命名并注册，模块内部互调也加上前缀；别名（`require f from m`）建立 `f` → `m.f` 映射，字节码和 LLVM 后端统一解析
 - **自举确定性**：boot 编译器和自举编译器使用相同的字节码编码规则，确保输出一致

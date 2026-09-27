@@ -1,6 +1,15 @@
 #include "minilang.h"
 #include <sys/wait.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#endif
+
+/* argv[0] as given to main(), used as a last resort to locate the executable. */
+static char g_argv0[4096] = "";
 
 char *read_file(const char *path) {
     FILE *f = fopen(path, "rb");
@@ -14,6 +23,99 @@ char *read_file(const char *path) {
     fclose(f);
     return buf;
 }
+/* Is this path a directory? */
+static int is_dir(const char *p) {
+    if (!p || !p[0]) { return 0; }
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* Copy dirname(path) into out, resolving it to an absolute path. */
+static void abs_dirname(const char *path, char *out, size_t outsz) {
+    char buf[4096];
+    snprintf(buf, sizeof(buf), "%s", path);
+    char *slash = strrchr(buf, '/');
+    if (slash) {
+        *slash = '\0';
+        if (!buf[0]) { snprintf(buf, sizeof(buf), "/"); }
+    } else {
+        snprintf(buf, sizeof(buf), ".");
+    }
+    char resolved[4096];
+    if (realpath(buf, resolved)) {
+        snprintf(out, outsz, "%s", resolved);
+    } else {
+        snprintf(out, outsz, "%s", buf);
+    }
+}
+
+/**
+ * Directory holding the minilang executable. Needed to find syslib/, runtime.c
+ * and ir_compile.py no matter where the user runs from.
+ *
+ * /proc/self/exe exists on Linux only, so fall back to the macOS dynamic-loader
+ * API and finally to argv[0] (resolved through PATH when it has no slash).
+ * Without this the syslib path degrades to "syslib" relative to the *current
+ * working directory*, which breaks as soon as you run from anywhere else.
+ */
+static int get_exe_dir(char *out, size_t outsz) {
+    char exe[4096];
+
+    /* Linux */
+    {
+        ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        if (n > 0) {
+            exe[n] = '\0';
+            char resolved[4096];
+            if (realpath(exe, resolved)) { snprintf(exe, sizeof(exe), "%s", resolved); }
+            char *slash = strrchr(exe, '/');
+            if (slash && slash != exe) {
+                *slash = '\0';
+                snprintf(out, outsz, "%s", exe);
+                return 1;
+            }
+        }
+    }
+#if defined(__APPLE__)
+    /* macOS: there is no /proc, so ask the dynamic loader instead */
+    {
+        uint32_t size = (uint32_t)sizeof(exe);
+        if (_NSGetExecutablePath(exe, &size) == 0) {
+            char resolved[4096];
+            if (realpath(exe, resolved)) { snprintf(exe, sizeof(exe), "%s", resolved); }
+            char *slash = strrchr(exe, '/');
+            if (slash && slash != exe) {
+                *slash = '\0';
+                snprintf(out, outsz, "%s", exe);
+                return 1;
+            }
+        }
+    }
+#endif
+    /* Last resort: argv[0], searched through PATH when it is a bare name */
+    if (g_argv0[0]) {
+        if (strchr(g_argv0, '/')) {
+            abs_dirname(g_argv0, out, outsz);
+            return 1;
+        }
+        const char *path_env = getenv("PATH");
+        if (path_env) {
+            char pathcopy[8192];
+            snprintf(pathcopy, sizeof(pathcopy), "%s", path_env);
+            char *save = NULL;
+            for (char *p = strtok_r(pathcopy, ":", &save); p; p = strtok_r(NULL, ":", &save)) {
+                char cand[8192];
+                snprintf(cand, sizeof(cand), "%s/%s", p, g_argv0);
+                if (access(cand, X_OK) == 0) {
+                    abs_dirname(cand, out, outsz);
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
 /* Compute syslib directory: MINILANG_DIR/syslib if set, else <exe_dir>/syslib, else "syslib" */
 static void get_syslib_dir(char *out, size_t outsz) {
     const char *dir = getenv("MINILANG_DIR");
@@ -21,27 +123,20 @@ static void get_syslib_dir(char *out, size_t outsz) {
         snprintf(out, outsz, "%s/syslib", dir);
         return;
     }
-    /* Resolve executable directory via /proc/self/exe */
-    char exe[4096];
-    ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-    if (n > 0) {
-        exe[n] = '\0';
-        char *slash = strrchr(exe, '/');
-        if (slash) *slash = '\0';
-        if (exe[0]) {
-            snprintf(out, outsz, "%s/syslib", exe);
-            return;
-        }
+    char exe_dir[4096];
+    if (get_exe_dir(exe_dir, sizeof(exe_dir))) {
+        snprintf(out, outsz, "%s/syslib", exe_dir);
+        /* Only trust it if it is really there; otherwise keep the old
+           cwd-relative behaviour rather than pointing at a missing path. */
+        if (is_dir(out)) { return; }
     }
     snprintf(out, outsz, "syslib");
 }
 /* Set search dirs from a file path: script_dir = dirname(file), syslib = MINILANG_DIR/syslib */
 static void set_dirs_from_file(const char *file) {
-    char script_dir[1024];
-    snprintf(script_dir, sizeof(script_dir), "%s", file);
-    char *slash = strrchr(script_dir, '/');
-    if (slash) *slash = '\0';
-    else strcpy(script_dir, ".");
+    char script_dir[4096];
+    /* Absolute, so `require sibling;` still works when the cwd is elsewhere */
+    abs_dirname(file, script_dir, sizeof(script_dir));
     char syslib_dir[1024];
     get_syslib_dir(syslib_dir, sizeof(syslib_dir));
     parser_set_search_dirs(script_dir, syslib_dir);
@@ -58,8 +153,8 @@ static void usage(const char *prog) {
     fprintf(stderr, "Usage: %s <command> [args...]\n", prog);
     fprintf(stderr, "Commands:\n");
     fprintf(stderr, "  run <file>        Compile and run .mil, or run precompiled .milc bytecode\n");
-    fprintf(stderr, "  bytecode <file>   Compile and dump bytecode (human readable)\n");
-    fprintf(stderr, "  dump-text <file>  Compile and dump bytecode (text format, for self-hosting compare)\n");
+    fprintf(stderr, "  bytecode <file>   Disassemble .mil, or read a .milc bytecode file\n");
+    fprintf(stderr, "  dump-text <file>  Text bytecode for .mil, or read a .milc bytecode file\n");
     fprintf(stderr, "  llvm <file>       Compile to LLVM IR (.ll)\n");
     fprintf(stderr, "  build [opts] <file>  Compile to native executable or .milc bytecode\n");
     fprintf(stderr, "    -b, --bytecode     write bytecode file (.milc, magic \"!milc\")\n");
@@ -163,6 +258,13 @@ static void dump_bytecode(Program *prog) {
             case OP_FILEEXISTS: name="FILEEXISTS"; break;
             case OP_WRITEFILE: name="WRITEFILE"; break;
             case OP_SYSTEM: name="SYSTEM"; break;
+            case OP_ARGC: name="ARGC"; break;
+            case OP_ARGV: name="ARGV"; break;
+            case OP_READFILE: name="READFILE"; break;
+            case OP_READLINE: name="READLINE"; break;
+            case OP_READFILEBYTES: name="READFILEBYTES"; break;
+            case OP_WRITEFILEBYTES: name="WRITEFILEBYTES"; break;
+            case OP_CHR: name="CHR"; break;
         }
         printf("  %4d: %-12s %6d %6d\n", i/3, name, op1, op2);
     }
@@ -194,6 +296,20 @@ static int compile_and_run_src(const char *src) {
     waitpid(pid, &status, 0);
     return WIFEXITED(status) ? WEXITSTATUS(status) : 1;
 }
+/* Load a .milc bytecode file, or compile a .mil source. Calls exit(1) on error. */
+static Program *load_or_compile(const char *file) {
+    if (is_milc_file(file)) {
+        Program *prog = program_read_milc(file);
+        if (!prog) { fprintf(stderr, "Failed to load bytecode: %s\n", file); exit(1); }
+        return prog;
+    }
+    char *src = read_file(file);
+    set_dirs_from_file(file);
+    Program *prog = compile_source(src);
+    free(src);
+    return prog;
+}
+
 /* Run a .mil file (compile) or .milc file (load). */
 static int run_file(const char *file, int prog_argc, char **prog_argv) {
     if (is_milc_file(file)) {
@@ -221,6 +337,15 @@ static int run_file(const char *file, int prog_argc, char **prog_argv) {
 /* REPL: interactive. Maintains env (func + top-level var declarations) across lines. */
 static void repl(const char *syslib_dir) {
     (void)syslib_dir;
+    /* Anchor the search dirs here: syslib/ lives next to the executable, and the
+       script dir is the cwd, so `require` works from any working directory. */
+    {
+        char syslib[1024];
+        char cwd[4096];
+        get_syslib_dir(syslib, sizeof(syslib));
+        if (!getcwd(cwd, sizeof(cwd))) { snprintf(cwd, sizeof(cwd), "."); }
+        parser_set_search_dirs(cwd, syslib);
+    }
     printf("minilang REPL (type 'quit' to exit)\n");
     /* env_source accumulates function definitions and top-level var declarations */
     char *env = malloc(1024);
@@ -360,11 +485,8 @@ static int build_executable(const char *file) {
         const char *d = getenv("MINILANG_DIR");
         if (d && d[0]) {
             snprintf(exe_dir, sizeof(exe_dir), "%s", d);
-        } else {
-            char exe[4096];
-            ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-            if (n > 0) { exe[n] = '\0'; char *sl = strrchr(exe, '/'); if (sl) *sl = '\0'; snprintf(exe_dir, sizeof(exe_dir), "%s", exe); }
-            else snprintf(exe_dir, sizeof(exe_dir), ".");
+        } else if (!get_exe_dir(exe_dir, sizeof(exe_dir))) {
+            snprintf(exe_dir, sizeof(exe_dir), ".");
         }
     }
     snprintf(cmd_buf, sizeof(cmd_buf), "python3 %s/ir_compile.py %s %s", exe_dir, llpath, opath);
@@ -401,6 +523,7 @@ static void self_test(void) {
     printf("(boot compile done - compare via bootstrap_test.sh)\n");
 }
 int main(int argc, char **argv) {
+    if (argc > 0 && argv[0]) { snprintf(g_argv0, sizeof(g_argv0), "%s", argv[0]); }
     if (argc < 2) usage(argv[0]);
     const char *cmd = argv[1];
     if (strcmp(cmd, "repl") == 0) {
@@ -415,13 +538,11 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "bytecode") == 0 || strcmp(cmd, "dump-text") == 0) {
         if (argc < 3) usage(argv[0]);
         const char *file = argv[2];
-        char *src = read_file(file);
-        set_dirs_from_file(file);
-        Program *prog = compile_source(src);
+        /* .milc is loaded as-is, .mil is compiled first */
+        Program *prog = load_or_compile(file);
         if (strcmp(cmd, "dump-text") == 0) dump_bytecode_text(prog);
         else dump_bytecode(prog);
         program_free(prog);
-        free(src);
         return 0;
     }
     if (strcmp(cmd, "llvm") == 0) {
